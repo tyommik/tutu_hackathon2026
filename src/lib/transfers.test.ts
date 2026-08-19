@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bestVia, hubCandidates, rankTransfers } from "./transfers";
+import { HUBS, bestVia, hubCandidates, hubPool, rankTransfers } from "./transfers";
 import type { OfferSnapshot } from "./trip";
 
 function offer(dep: string, arr: string, price: number): OfferSnapshot {
@@ -36,6 +36,22 @@ describe("hubCandidates", () => {
       "Новосибирск",
       "Москва",
     ]);
+  });
+});
+
+describe("hubPool", () => {
+  it("LLM-кандидаты дополняют статический список, а не замещают его", () => {
+    // регресс Воронеж → Каир: LLM вернула 5 международных хабов, Москва
+    // выпала из перебора — а единственный рабочий маршрут шёл через неё
+    const llm = ["Стамбул", "Дубай", "Ереван", "Белград", "Аддис-Абеба"];
+    const pool = hubPool(llm);
+    expect(pool.slice(0, llm.length)).toEqual(llm);
+    for (const h of HUBS) expect(pool).toContain(h);
+  });
+
+  it("без ответа LLM пул — статический список", () => {
+    expect(hubPool(null)).toEqual(HUBS);
+    expect(hubPool(undefined)).toEqual(HUBS);
   });
 });
 

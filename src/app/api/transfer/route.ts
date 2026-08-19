@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { suggestHubs } from "@/lib/hubSuggest";
 import { McpError } from "@/lib/mcp";
 import { searchLeg } from "@/lib/search";
-import { bestVia, hubCandidates, rankTransfers, type TransferOption } from "@/lib/transfers";
+import { bestVia, hubCandidates, hubPool, rankTransfers, type TransferOption } from "@/lib/transfers";
 import { DEFAULT_PARTY, type Party } from "@/lib/trip";
 
 export const dynamic = "force-dynamic";
@@ -45,9 +45,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Нужны origin, destination и date" }, { status: 400 });
   }
   const party = body.party ?? DEFAULT_PARTY;
-  // LLM подбирает хабы под маршрут; не ответил — статический список
+  // LLM подбирает хабы под маршрут; статический список всегда в хвосте
+  // страховкой (см. hubPool), лимит с запасом под оба источника
   const suggested = await suggestHubs(origin, destination);
-  const hubs = hubCandidates(origin, destination, 5, suggested ?? undefined);
+  const hubs = hubCandidates(origin, destination, 7, hubPool(suggested));
   const run = limiter(6);
   const started = Date.now();
 
