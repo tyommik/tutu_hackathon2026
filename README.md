@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/tutu-ai.webp" alt="tutu AI" width="420">
+</p>
+
 # Тропа
 
 Конструктор планирования путешествий на основе [Tutu MCP](https://mcp.tutu.ru/mcp).
