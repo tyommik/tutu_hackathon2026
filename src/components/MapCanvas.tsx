@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { LAND_D } from "@/lib/land";
-import { legPathD, project, VB } from "@/lib/geo";
+import { legPathD, priceLabelPos, project, VB } from "@/lib/geo";
 import { cityOf } from "@/lib/aviaFilters";
 import { cityId, stayKey, type Leg, type Stay } from "@/lib/trip";
 import { resolveCoords } from "@/lib/cities";
@@ -65,7 +65,10 @@ export function MapCanvas({
 
   const zoomAt = useCallback((k: number, cx?: number, cy?: number) => {
     setView((v) => {
-      const nw = Math.min(2400, Math.max(200, v.w * k));
+      // нижняя граница была 200, пока подписи росли вместе с зумом; теперь
+      // они держат экранный размер, и глубокий зум разводит тесных соседей
+      // (Ярославль/Кострома) вместо бессмысленного укрупнения картинки
+      const nw = Math.min(2400, Math.max(40, v.w * k));
       const real = nw / v.w;
       const px = cx ?? v.x + v.w / 2;
       const py = cy ?? v.y + v.h / 2;
@@ -85,6 +88,14 @@ export function MapCanvas({
     pt.y = e.clientY;
     return pt.matrixTransform(svg.getScreenCTM()!.inverse());
   };
+
+  /**
+   * Экранный масштаб: зум сужает viewBox, и всё нарисованное растёт как
+   * картинка. Подписи, точки и толщины линий — экранные величины: домножаем
+   * их на s, чтобы при приближении они держали постоянный размер на экране
+   * и расходились вместе с городами, а не накладывались как прежде.
+   */
+  const s = view.w / VB.W;
 
   const cities = new Map<string, { name: string; lat?: number; lng?: number }>();
   // начальная точка видна на карте ещё до появления первого плеча
@@ -137,7 +148,7 @@ export function MapCanvas({
         onPointerUp={() => (drag.current = null)}
         style={{ cursor: drag.current ? "grabbing" : "grab" }}
       >
-        <path d={LAND_D} fill="var(--land)" stroke="var(--line-strong)" strokeWidth={0.6} opacity={0.9} />
+        <path d={LAND_D} fill="var(--land)" stroke="var(--line-strong)" strokeWidth={0.6 * s} opacity={0.9} />
 
         {legs.map((l) => {
           const fromC = coordsOf(l.from);
@@ -162,7 +173,7 @@ export function MapCanvas({
             chain.length > 2
               ? chain.slice(0, -1).map((p, i) => legPathD(p, chain[i + 1], mode)).join(" ")
               : legPathD(a, b, mode);
-          const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - (mode === "avia" ? 16 : 8) };
+          const mid = priceLabelPos(a, b, mode, s);
           return (
             <g key={l.id}>
               <path
@@ -170,15 +181,21 @@ export function MapCanvas({
                 fill="none"
                 className={searching ? "searching" : undefined}
                 stroke={searching ? "var(--accent)" : MODE_COLOR[mode]}
-                strokeWidth={hoveredLeg === l.id ? 4.4 : 2.4}
+                strokeWidth={(hoveredLeg === l.id ? 4.4 : 2.4) * s}
                 strokeDasharray={
-                  searching ? "4 8" : mode === "bus" ? "7 5" : l.selectedOffer ? undefined : "3 5"
+                  searching
+                    ? `${4 * s} ${8 * s}`
+                    : mode === "bus"
+                      ? `${7 * s} ${5 * s}`
+                      : l.selectedOffer
+                        ? undefined
+                        : `${3 * s} ${5 * s}`
                 }
               />
               {transferPts.map((p) => (
                 <g key={p.name}>
-                  <circle cx={p.x} cy={p.y} r={4} fill="var(--panel)" stroke={MODE_COLOR[mode]} strokeWidth={1.8} />
-                  <text x={p.x + 8} y={p.y - 6} fontSize={10} fill="var(--ink-3)">
+                  <circle cx={p.x} cy={p.y} r={4 * s} fill="var(--panel)" stroke={MODE_COLOR[mode]} strokeWidth={1.8 * s} />
+                  <text x={p.x + 8 * s} y={p.y - 6 * s} fontSize={10 * s} fill="var(--ink-3)">
                     {p.name}
                   </text>
                 </g>
@@ -187,13 +204,25 @@ export function MapCanvas({
                 d={d}
                 fill="none"
                 stroke="transparent"
-                strokeWidth={16}
+                strokeWidth={16 * s}
                 style={{ cursor: "pointer" }}
                 onPointerEnter={() => onHover(l.id)}
                 onPointerLeave={() => onHover(null)}
               />
               {l.selectedOffer && (
-                <text x={mid.x} y={mid.y} textAnchor="middle" fontSize={10.5} fontWeight={600} fill="var(--ink-2)">
+                <text
+                  x={mid.x}
+                  y={mid.y}
+                  textAnchor="middle"
+                  fontSize={10.5 * s}
+                  fontWeight={600}
+                  fill="var(--ink-2)"
+                  // гало цветом фона: цена читается и там, где её всё же
+                  // пересекает чужое плечо на плотном маршруте
+                  stroke="var(--bg)"
+                  strokeWidth={3 * s}
+                  paintOrder="stroke"
+                >
                   {fmt(l.selectedOffer.price)}
                 </text>
               )}
@@ -226,31 +255,31 @@ export function MapCanvas({
               }
             >
               {/* точка радиусом 7 — мелкая цель для мыши: расширяем прозрачным кругом */}
-              {st && <circle cx={p.x} cy={p.y} r={15} fill="transparent" />}
+              {st && <circle cx={p.x} cy={p.y} r={15 * s} fill="transparent" />}
               {hot && (
                 <circle
                   cx={p.x}
                   cy={p.y}
-                  r={12}
+                  r={12 * s}
                   fill="none"
                   stroke="var(--hotel)"
-                  strokeWidth={1.6}
+                  strokeWidth={1.6 * s}
                   opacity={0.5}
                 />
               )}
               <circle
                 cx={p.x}
                 cy={p.y}
-                r={st ? (hot ? 9 : 7) : 5.5}
+                r={(st ? (hot ? 9 : 7) : 5.5) * s}
                 fill={st ? "var(--hotel)" : "var(--ink-2)"}
                 stroke="var(--panel)"
-                strokeWidth={2}
+                strokeWidth={2 * s}
               />
               <text
-                x={right ? p.x - 12 : p.x + 12}
-                y={p.y + 4}
+                x={right ? p.x - 12 * s : p.x + 12 * s}
+                y={p.y + 4 * s}
                 textAnchor={right ? "end" : "start"}
-                fontSize={11.5}
+                fontSize={11.5 * s}
                 fontWeight={600}
                 fill={st ? "var(--ink)" : "var(--ink-2)"}
               >
@@ -258,10 +287,10 @@ export function MapCanvas({
               </text>
               {hot && (
                 <text
-                  x={right ? p.x - 12 : p.x + 12}
-                  y={p.y + 17}
+                  x={right ? p.x - 12 * s : p.x + 12 * s}
+                  y={p.y + 17 * s}
                   textAnchor={right ? "end" : "start"}
-                  fontSize={10}
+                  fontSize={10 * s}
                   fontWeight={600}
                   fill="var(--hotel)"
                 >
