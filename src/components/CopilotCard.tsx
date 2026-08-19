@@ -24,6 +24,9 @@ export function CopilotCard() {
   const [voice, setVoice] = useState<"idle" | "rec" | "busy">("idle");
   const [voiceErr, setVoiceErr] = useState("");
   const recRef = useRef<MediaRecorder | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveCtxRef = useRef<AudioContext | null>(null);
+  const waveRafRef = useRef(0);
 
   // высота поля подстраивается под текст; max-height ограничивает рост в CSS
   useEffect(() => {
@@ -63,8 +66,66 @@ export function CopilotCard() {
         rec.stop();
         rec.stream.getTracks().forEach((t) => t.stop());
       }
+      stopWave();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Волна поверх поля ввода: каждый кадр берём RMS-уровень сигнала и рисуем
+   * ленту столбиков, бегущую справа налево. Уровни держим в замыкании —
+   * ре-рендеры реакта им не нужны.
+   */
+  const startWave = (stream: MediaStream) => {
+    const ctx = new AudioContext();
+    waveCtxRef.current = ctx;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    const levels: number[] = [];
+    const draw = () => {
+      waveRafRef.current = requestAnimationFrame(draw);
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (canvas.width !== w * dpr) canvas.width = w * dpr;
+      if (canvas.height !== h * dpr) canvas.height = h * dpr;
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      const bar = 3 * dpr;
+      const gap = 2 * dpr;
+      const max = Math.floor((w * dpr) / (bar + gap));
+      levels.push(rms);
+      if (levels.length > max) levels.shift();
+      const g = canvas.getContext("2d");
+      if (!g) return;
+      g.clearRect(0, 0, canvas.width, canvas.height);
+      // цвет задан на canvas через CSS (var(--accent)) — берём вычисленный
+      g.fillStyle = getComputedStyle(canvas).color;
+      const mid = canvas.height / 2;
+      for (let i = 0; i < levels.length; i++) {
+        // тихий сигнал тоже виден: минимум 2px, дальше рост от уровня
+        const bh = Math.max(2 * dpr, Math.min(levels[i] * 3, 1) * (canvas.height - 4 * dpr));
+        const x = canvas.width - (levels.length - i) * (bar + gap);
+        g.fillRect(x, mid - bh / 2, bar, bh);
+      }
+    };
+    waveRafRef.current = requestAnimationFrame(draw);
+  };
+
+  const stopWave = () => {
+    cancelAnimationFrame(waveRafRef.current);
+    void waveCtxRef.current?.close().catch(() => {});
+    waveCtxRef.current = null;
+  };
 
   const toggleVoice = async () => {
     if (voice === "busy") return;
@@ -91,6 +152,7 @@ export function CopilotCard() {
       if (e.data.size > 0) chunks.push(e.data);
     };
     rec.onstop = async () => {
+      stopWave();
       stream.getTracks().forEach((t) => t.stop());
       setVoice("busy");
       try {
@@ -114,6 +176,7 @@ export function CopilotCard() {
     };
     recRef.current = rec;
     rec.start();
+    startWave(stream);
     setVoice("rec");
   };
 
@@ -204,29 +267,33 @@ export function CopilotCard() {
 
       {voiceErr && <div className="voice-err">{voiceErr}</div>}
       <div className="row">
-        <textarea
-          ref={inputRef}
-          value={text}
-          rows={1}
-          placeholder={voice === "rec" ? "Говорите..." : "Куда едем? Shift+Enter — новая строка"}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          disabled={copilot.loading}
-        />
-        <button
-          className={`btn mic${voice === "rec" ? " rec" : ""}`}
-          onClick={toggleVoice}
-          disabled={copilot.loading || voice === "busy"}
-          aria-label={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
-          title={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
-        >
-          {voice === "busy" ? "…" : voice === "rec" ? "■" : "🎙"}
-        </button>
+        <div className="field">
+          <textarea
+            ref={inputRef}
+            value={text}
+            rows={1}
+            placeholder="Куда едем? Shift+Enter — новая строка"
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            disabled={copilot.loading}
+            readOnly={voice === "rec"}
+          />
+          {voice === "rec" && <canvas ref={canvasRef} className="wave" />}
+          <button
+            className={`micbtn${voice === "rec" ? " rec" : ""}`}
+            onClick={toggleVoice}
+            disabled={copilot.loading || voice === "busy"}
+            aria-label={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
+            title={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
+          >
+            {voice === "busy" ? "…" : voice === "rec" ? "✕" : <span className="mic-ico" />}
+          </button>
+        </div>
         <button className="btn" onClick={send} disabled={copilot.loading || !text.trim()}>
           →
         </button>
@@ -334,25 +401,60 @@ export function CopilotCard() {
         .msg.err { background: var(--warn-bg); color: var(--warn); }
         .voice-err { font-size: 13px; color: var(--warn); }
         .row { display: flex; gap: 8px; align-items: flex-end; }
-        .row textarea {
+        .field { position: relative; flex: 1; min-width: 0; display: flex; }
+        .field textarea {
           flex: 1;
           min-width: 0;
           font-size: 15px;
           line-height: 1.4;
-          padding: 9px 12px;
+          padding: 9px 36px 9px 12px;
           resize: none;
           max-height: 140px;
           overflow-y: auto;
         }
-        .row .btn { padding: 9px 16px; font-size: 15px; }
-        .row .mic { padding: 9px 12px; }
-        .row .mic.rec {
+        /* волна лежит внутри рамки поля и прячет текст под собой;
+           canvas — replaced-элемент: inset его не растягивает, размеры явные */
+        .wave {
+          position: absolute;
+          top: 1px;
+          left: 1px;
+          width: calc(100% - 31px);
+          height: calc(100% - 2px);
+          display: block;
+          border-radius: 7px;
+          background: var(--panel);
+          color: var(--accent);
+        }
+        .micbtn {
+          position: absolute;
+          right: 4px;
+          bottom: 4px;
+          width: 28px;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 7px;
+          color: var(--ink-3);
+          font-size: 14px;
+        }
+        .micbtn:hover { color: var(--accent); background: var(--panel-2); }
+        .micbtn.rec {
           color: var(--warn);
           animation: micpulse 1.2s ease-in-out infinite;
+        }
+        .mic-ico {
+          display: block;
+          width: 17px;
+          height: 17px;
+          background: currentColor;
+          -webkit-mask: url(/mic.png) center / contain no-repeat;
+          mask: url(/mic.png) center / contain no-repeat;
         }
         @keyframes micpulse {
           50% { opacity: 0.45; }
         }
+        .row .btn { padding: 9px 16px; font-size: 15px; }
       `}</style>
     </div>
   );
