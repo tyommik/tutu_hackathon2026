@@ -1,0 +1,24 @@
+services:
+  tropa:
+    build:
+      context: .
+      args:
+        # значения берутся из .env рядом с этим файлом (compose читает его сам)
+        NEXT_PUBLIC_TILES_URL: ${NEXT_PUBLIC_TILES_URL}
+        NEXT_PUBLIC_TILES_URL_DARK: ${NEXT_PUBLIC_TILES_URL_DARK}
+        NEXT_PUBLIC_TILES_ATTRIBUTION: ${NEXT_PUBLIC_TILES_ATTRIBUTION}
+    image: tropa:latest
+    container_name: tropa
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    # По умолчанию только localhost: наружу пускает nginx хоста, он же держит
+    # TLS. Для демо в доверенной сети в .env ставят TROPA_BIND=0.0.0.0 —
+    # тогда порт виден напрямую, но уже без TLS.
+    ports:
+      - "${TROPA_BIND:-127.0.0.1}:3000:3000"
+    # Кэш поисков живёт в памяти процесса, поэтому реплика ровно одна.
+    # Второй контейнер = второй пустой кэш = минуты ожидания на демо.
+    deploy:
+      replicas: 1

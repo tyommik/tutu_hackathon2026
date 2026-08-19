@@ -1,0 +1,25 @@
+# Пример server-блока для nginx на хосте. Положить в
+# /etc/nginx/sites-available/tropa, включить симлинком, затем certbot.
+
+server {
+    listen 80;
+    server_name tropa.example.com;
+    # certbot сам добавит редирект на https и пропишет сертификаты
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # ВАЖНО: у /api/optimize и /api/transfer maxDuration 300 с — они
+        # перебирают хабы и даты живыми запросами к Туту. Дефолтные 60 с
+        # nginx рвут такой запрос на 504 в самый интересный момент.
+        proxy_read_timeout 320s;
+        proxy_send_timeout 320s;
+
+        # ответы приходят разом, буферизация только добавляет задержку
+        proxy_buffering off;
+    }
+}
