@@ -6,6 +6,7 @@ import {
   legId,
   localDate,
   removeCity,
+  removeStop,
   stayKey,
   tripTotal,
   updateLeg,
@@ -180,9 +181,72 @@ describe("мутации", () => {
     expect(`${back.legs[0].from.name}→${back.legs[0].to.name}`).toBe("Мадрид→Барселона");
   });
 
+  it("removeStop на хвосте просто отрезает последнее плечо", () => {
+    const trip: Trip = {
+      legs: [leg("Оскол", "Стамбул", "2026-09-10"), leg("Стамбул", "Иберия", "2026-09-13")],
+      stays: [],
+    };
+    const t = removeStop(trip, trip.legs[1].id);
+    expect(t.legs.map((l) => `${l.from.name}→${l.to.name}`)).toEqual(["Оскол→Стамбул"]);
+  });
+
+  it("removeStop в середине сливает смежные плечи и сбрасывает оффер", () => {
+    const trip: Trip = {
+      legs: [
+        leg("Мадрид", "Валенсия", "2026-09-18", offer("2026-09-18T08:00:00+02:00", "2026-09-18T10:00:00+02:00")),
+        leg("Валенсия", "Барселона", "2026-09-19", offer("2026-09-19T09:00:00+02:00", "2026-09-19T12:00:00+02:00")),
+        leg("Барселона", "Порту", "2026-09-21"),
+      ],
+      stays: [],
+    };
+    const t = removeStop(trip, trip.legs[0].id);
+    expect(t.legs.map((l) => `${l.from.name}→${l.to.name}`)).toEqual([
+      "Мадрид→Барселона",
+      "Барселона→Порту",
+    ]);
+    // объединённое плечо — новый маршрут: дата отправления прежняя, поиск заново
+    expect(t.legs[0].date).toBe("2026-09-18");
+    expect(t.legs[0].mode).toBe("any");
+    expect(t.legs[0].selectedOffer).toBeUndefined();
+  });
+
+  it("removeStop не сливает петлю в плечо город→тот же город", () => {
+    const trip: Trip = {
+      legs: [leg("Оскол", "Стамбул", "2026-09-10"), leg("Стамбул", "Оскол", "2026-09-13")],
+      stays: [],
+    };
+    // убрать Стамбул: Оскол→Оскол бессмысленно, оба плеча просто удаляются
+    const t = removeStop(trip, trip.legs[0].id);
+    expect(t.legs).toHaveLength(0);
+  });
+
+  it("removeStop с неизвестным id ничего не меняет", () => {
+    expect(removeStop(base, "нет-такого")).toBe(base);
+  });
+
   it("legId избегает коллизий", () => {
     const taken = new Set(["a-b-2026-09-18"]);
     expect(legId(city("a"), city("b"), "2026-09-18", taken)).toBe("a-b-2026-09-18-2");
+  });
+});
+
+describe("deriveStays · отказ от отеля", () => {
+  const legs = [
+    leg("Москва", "Стамбул", "2026-09-11", offer("2026-09-11T13:20:00+03:00", "2026-09-11T17:05:00+03:00")),
+    leg("Стамбул", "Порту", "2026-09-13", offer("2026-09-13T10:15:00+03:00", "2026-09-13T14:45:00+01:00")),
+  ];
+
+  it("noHotel переживает пересчёт ночёвок", () => {
+    const prev = deriveStays(legs).map((s) => ({ ...s, noHotel: true }));
+    expect(deriveStays(legs, prev)[0].noHotel).toBe(true);
+  });
+
+  it("noHotel привязан к городу и переживает сдвиг дат", () => {
+    const prev = deriveStays(legs).map((s) => ({ ...s, noHotel: true }));
+    const shifted = [legs[0], { ...legs[1], date: "2026-09-14", selectedOffer: undefined }];
+    const stays = deriveStays(shifted, prev);
+    expect(stays[0].checkout).toBe("2026-09-14");
+    expect(stays[0].noHotel).toBe(true);
   });
 });
 

@@ -48,6 +48,18 @@
         "3100"
       ],
       "port": 3100
+    },
+    {
+      "name": "tropa-dev-3300",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3300"
+      ],
+      "port": 3300
     }
   ]
 }

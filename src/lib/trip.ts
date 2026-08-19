@@ -113,6 +113,11 @@ export interface Leg {
   selectedOffer?: OfferSnapshot;
   /** Оффер выбран пользователем вручную — авто-ремонт его не трогает. */
   pinned?: boolean;
+  /**
+   * Своим ходом: билет не нужен, плечо остаётся связкой городов. Поиск и
+   * checkout его пропускают, цену человек вносит сам через «+ расход».
+   */
+  noTicket?: boolean;
   /** Сколько раз авто-ремонт сдвигал дату ради стыковки (кап — 2). */
   autoShifts?: number;
   /** Выбранные на схеме вагона места (rail). */
@@ -133,6 +138,8 @@ export interface Stay {
   checkout: string;
   nights: number;
   selectedHotel?: HotelSnapshot;
+  /** Отель не нужен: ночёвка остаётся в плане, но не ищется и не в бюджете. */
+  noHotel?: boolean;
   note?: Note;
 }
 
@@ -186,6 +193,8 @@ export function deriveStays(legs: Leg[], previous: Stay[] = []): Stay[] {
   const notes = new Map(
     previous.filter((s) => s.note).map((s) => [cityId(s.city), s.note as Note]),
   );
+  // отказ от отеля — тоже про город: сдвиг дат не должен возвращать отель
+  const noHotels = new Set(previous.filter((s) => s.noHotel).map((s) => cityId(s.city)));
   const out: Stay[] = [];
   for (let i = 0; i < legs.length - 1; i++) {
     const cur = legs[i];
@@ -197,6 +206,7 @@ export function deriveStays(legs: Leg[], previous: Stay[] = []): Stay[] {
     const stay: Stay = { city: cur.to, checkin: arrival, checkout: departure, nights };
     const prior = keep.get(stayKey(stay));
     if (prior?.selectedHotel) stay.selectedHotel = prior.selectedHotel;
+    if (noHotels.has(cityId(stay.city))) stay.noHotel = true;
     const note = prior?.note ?? notes.get(cityId(stay.city));
     if (note) stay.note = note;
     out.push(stay);
@@ -302,6 +312,33 @@ export function insertCity(trip: Trip, legId: string, city: CityRef, date: strin
 
 function legIdFor(from: CityRef, to: CityRef, date: string, taken: Set<string>): string {
   return legId(from, to, date, taken);
+}
+
+/**
+ * Удаление остановки по плечу: остановка — это `to` плеча. В отличие от
+ * removeCity работает позиционно: повторный город (Оскол в начале и в конце
+ * кольцевого маршрута) в других местах не трогается. Хвост отрезается;
+ * в середине смежные плечи сливаются в новое (mode='any', дата отправления
+ * прежняя, оффер ищется заново). Петля, схлопывающаяся в город→тот же город,
+ * не сливается — оба плеча просто удаляются.
+ */
+export function removeStop(trip: Trip, targetLegId: string): Trip {
+  const ix = trip.legs.findIndex((l) => l.id === targetLegId);
+  if (ix < 0) return trip;
+  const a = trip.legs[ix];
+  const b = trip.legs[ix + 1];
+  const legs = [...trip.legs.slice(0, ix), ...trip.legs.slice(ix + 2)];
+  if (b && cityId(a.from) !== cityId(b.to)) {
+    const merged: Leg = {
+      id: legId(a.from, b.to, a.date, new Set(legs.map((l) => l.id))),
+      from: a.from,
+      to: b.to,
+      date: a.date,
+      mode: "any",
+    };
+    legs.splice(ix, 0, merged);
+  }
+  return { legs, stays: deriveStays(legs, trip.stays) };
 }
 
 /** Удаление города: смежные плечи сливаются в одно (mode='any'). */

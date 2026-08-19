@@ -73,11 +73,11 @@ export function Timeline({
 }) {
   const {
     legs, stays, origin, legStatus, legUnavailable, legResolved, legTransfers, stayStatus,
-    warnings, copilot, addCity, removeLastCity, clearOrigin, seedLegend, clear, splitViaHub,
+    warnings, copilot, addCity, removeCityAt, removeOrigin, seedLegend, clear, splitViaHub,
     setNote, askCopilot, findTransfer, replaceCity, extras, planOpen, setPlanOpen,
+    removeHotel, restoreHotel, removeTicket, restoreTicket,
   } = useTrip();
   const busyNote = (key: string) => copilot.loading && copilot.noteFor === key;
-  const lastLegId = legs.length > 0 ? legs[legs.length - 1].id : null;
   const warns = warnings();
   const windows = timeWindows(legs, stays);
   const [adding, setAdding] = useState(false);
@@ -131,7 +131,7 @@ export function Timeline({
               city={origin.city.name}
               // с плечами дату несёт заголовок дня ниже — не дублируем
               date={legs.length === 0 ? origin.date : undefined}
-              onRemove={legs.length === 0 ? clearOrigin : undefined}
+              onRemove={removeOrigin}
               note={origin.note}
               onNote={(n) => setNote(ORIGIN_NOTE, n)}
             />
@@ -160,7 +160,9 @@ export function Timeline({
                     onClick={() => onOpenVariants({ kind: "leg", leg: it.leg })}
                     onSplit={() => splitViaHub(it.leg.id)}
                     onSeatmap={() => onOpenSeatmap(it.leg)}
-                    onRemove={it.leg.id === lastLegId ? removeLastCity : undefined}
+                    onRemove={() => removeCityAt(it.leg.id)}
+                    onSelfRide={() => removeTicket(it.leg.id)}
+                    onRestoreTicket={() => restoreTicket(it.leg.id)}
                     noteBusy={busyNote(it.leg.id)}
                     onNote={(n) => setNote(it.leg.id, n)}
                     onAskSights={(w) =>
@@ -184,6 +186,8 @@ export function Timeline({
                     onAskSights={() =>
                       askCopilot(stayPrompt(it.stay), { noteFor: stayKey(it.stay) })
                     }
+                    onRemoveHotel={() => removeHotel(stayKey(it.stay))}
+                    onRestoreHotel={() => restoreHotel(stayKey(it.stay))}
                   />
                 )}
                 <ExtraRow afterId={it.kind === "leg" ? it.leg.id : stayKey(it.stay)} />
@@ -538,7 +542,7 @@ function OriginCard({
 }: {
   city: string;
   date?: string;
-  /** Задан, пока маршрут состоит из одной точки — её можно переиграть. */
+  /** Убрать начальную точку; с плечами началом станет следующий город. */
   onRemove?: () => void;
   note?: Note;
   onNote: (note: Note | null) => void;
@@ -609,6 +613,8 @@ function LegCard({
   onSplit,
   onSeatmap,
   onRemove,
+  onSelfRide,
+  onRestoreTicket,
   noteBusy,
   onNote,
   onAskSights,
@@ -627,8 +633,11 @@ function LegCard({
   onClick: () => void;
   onSplit: () => void;
   onSeatmap: () => void;
-  /** Задан только для последнего плеча — удаляет последний город. */
+  /** Убрать город прибытия плеча; в середине маршрута соседние плечи сольются. */
   onRemove?: () => void;
+  /** Своим ходом: билет не нужен, плечо остаётся, цена вносится расходом. */
+  onSelfRide: () => void;
+  onRestoreTicket: () => void;
   noteBusy: boolean;
   onNote: (note: Note | null) => void;
   onAskSights: (w: TimeWindowNote) => void;
@@ -640,8 +649,10 @@ function LegCard({
   onSuggestCity: (oldName: string, newName: string) => void;
 }) {
   const o = leg.selectedOffer;
+  // крестик спрашивает, что именно убрать: город или только билет
+  const [rmOpen, setRmOpen] = useState(false);
   const stops = o ? layoverSummary(o) : null;
-  const empty = status === "empty" ? explainEmptyLeg(unavailable, leg.date) : null;
+  const empty = status === "empty" && !leg.noTicket ? explainEmptyLeg(unavailable, leg.date) : null;
   const canSplit = empty?.hubSplit && leg.from.name !== "Москва" && leg.to.name !== "Москва";
   // подсказка нужна и для города отправления: «Бали → Москва» ломается так же
   const badCity = empty
@@ -665,43 +676,89 @@ function LegCard({
       // Enter только на самой карточке: внутри живут поля заметки
       onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onClick()}
       onPointerEnter={() => onHover(leg.id)}
-      onPointerLeave={() => onHover(null)}
+      onPointerLeave={() => {
+        onHover(null);
+        setRmOpen(false);
+      }}
     >
       <div className="row">
         <span className={`ic m-${o?.mode ?? leg.mode}`}>
-          {status === "loading" && !o ? <span className="spin" /> : MODE_ICON[o?.mode ?? leg.mode]}
+          {leg.noTicket ? "🚶" : status === "loading" && !o ? <span className="spin" /> : MODE_ICON[o?.mode ?? leg.mode]}
         </span>
         <span className="title">{leg.from.name} → {leg.to.name}</span>
-        <span className={`price${status === "loading" && !o ? " pulse" : ""}`}>
-          {o ? fmt(o.price) : status === "loading" ? "— ₽" : status === "empty" ? "нет" : ""}
+        <span className={`price${status === "loading" && !o && !leg.noTicket ? " pulse" : ""}`}>
+          {leg.noTicket ? "" : o ? fmt(o.price) : status === "loading" ? "— ₽" : status === "empty" ? "нет" : ""}
         </span>
         {onRemove && (
           <button
             className="rm"
             aria-label={`Убрать ${leg.to.name} из маршрута`}
             title={`Убрать ${leg.to.name}`}
+            aria-haspopup={!leg.noTicket}
+            aria-expanded={rmOpen}
             onClick={(e) => {
               e.stopPropagation();
-              onRemove();
+              // без билета выбора нет: остаётся только убрать город
+              if (leg.noTicket) onRemove();
+              else setRmOpen((v) => !v);
             }}
           >
             ✕
           </button>
         )}
+        {rmOpen && (
+          <div className="rmenu" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => {
+                setRmOpen(false);
+                onSelfRide();
+              }}
+            >
+              🚶 Поеду своим ходом
+            </button>
+            <button
+              className="drop"
+              onClick={() => {
+                setRmOpen(false);
+                onRemove?.();
+              }}
+            >
+              ✕ Убрать {leg.to.name} из маршрута
+            </button>
+          </div>
+        )}
       </div>
       <div className="sub">
-        {o
-          ? `${timeOf(o.departureAt)} → ${timeOf(o.arrivalAt)} · ${o.carriers.join(", ")}` +
-            (o.chosenFare ? ` · ${o.chosenFare}` : "")
-          : status === "loading"
-            ? leg.mode === "any"
-              ? "ищем: авиа, поезда, автобусы…"
-              : `ищем: ${{ rail: "поезда", avia: "рейсы", bus: "автобусы", etrain: "электрички" }[leg.mode]}…`
-            : status === "empty"
-              ? "прямых вариантов нет"
-              : status === "error"
-                ? "Туту не ответил — нажмите, чтобы повторить"
-                : "ожидает поиска"}
+        {leg.noTicket ? (
+          <>
+            своим ходом · цена — через «+ расход» ·{" "}
+            <span
+              className="restore"
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRestoreTicket();
+              }}
+              onKeyDown={(e) => e.key === "Enter" && onRestoreTicket()}
+            >
+              подобрать билеты
+            </span>
+          </>
+        ) : o ? (
+          `${timeOf(o.departureAt)} → ${timeOf(o.arrivalAt)} · ${o.carriers.join(", ")}` +
+          (o.chosenFare ? ` · ${o.chosenFare}` : "")
+        ) : status === "loading" ? (
+          leg.mode === "any"
+            ? "ищем: авиа, поезда, автобусы…"
+            : `ищем: ${{ rail: "поезда", avia: "рейсы", bus: "автобусы", etrain: "электрички" }[leg.mode]}…`
+        ) : status === "empty" ? (
+          "прямых вариантов нет"
+        ) : status === "error" ? (
+          "Туту не ответил — нажмите, чтобы повторить"
+        ) : (
+          "ожидает поиска"
+        )}
       </div>
       {stops && (
         <div className={`sub stops${stops.tight ? " tight" : ""}`}>
@@ -837,6 +894,42 @@ function LegCard({
           display: flex;
           align-items: center;
           gap: 8px;
+          /* якорь для выпадающего меню крестика */
+          position: relative;
+        }
+        .rmenu {
+          position: absolute;
+          top: calc(100% + 4px);
+          right: 0;
+          z-index: 5;
+          display: flex;
+          flex-direction: column;
+          min-width: 200px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          box-shadow: var(--shadow);
+          overflow: hidden;
+        }
+        .rmenu button {
+          text-align: left;
+          font-size: 12px;
+          padding: 8px 12px;
+          color: var(--ink-2);
+        }
+        .rmenu button:hover {
+          background: var(--panel-2);
+          color: var(--accent);
+        }
+        .rmenu button.drop:hover {
+          color: var(--danger);
+          background: var(--danger-bg);
+        }
+        .restore {
+          color: var(--accent);
+          font-weight: 500;
+          text-decoration: underline;
+          cursor: pointer;
         }
         .ic {
           width: 20px;
@@ -955,6 +1048,8 @@ function StayCard({
   noteBusy,
   onNote,
   onAskSights,
+  onRemoveHotel,
+  onRestoreHotel,
 }: {
   stay: Stay;
   status: string;
@@ -965,6 +1060,9 @@ function StayCard({
   noteBusy: boolean;
   onNote: (note: Note | null) => void;
   onAskSights: () => void;
+  /** Убрать отель: ночёвка остаётся, карточка переходит в «без отеля». */
+  onRemoveHotel: () => void;
+  onRestoreHotel: () => void;
 }) {
   const h = stay.selectedHotel;
   return (
@@ -980,11 +1078,47 @@ function StayCard({
     >
       <div className="row">
         <span className="ic">🏨</span>
-        <span className="title">{h ? h.name : `Отель · ${stay.city.name}`}</span>
-        <span className="price">{h ? fmt(h.price) : status === "loading" ? "…" : ""}</span>
+        <span className="title">
+          {h ? h.name : stay.noHotel ? `Без отеля · ${stay.city.name}` : `Отель · ${stay.city.name}`}
+        </span>
+        <span className="price">{h ? fmt(h.price) : status === "loading" && !stay.noHotel ? "…" : ""}</span>
+        {!stay.noHotel && (
+          <button
+            className="rm"
+            aria-label={`Убрать отель ${inCity(stay.city.name)}`}
+            title={`Убрать отель ${inCity(stay.city.name)}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveHotel();
+            }}
+          >
+            ✕
+          </button>
+        )}
       </div>
       <div className="sub">
-        {stay.nights} ноч. · {h ? `${h.stars ?? "—"}★` : status === "empty" ? "свободных не нашлось" : "подбираем…"}
+        {stay.noHotel ? (
+          <>
+            {stay.nights} ноч. · ночлег свой ·{" "}
+            <span
+              className="restore"
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRestoreHotel();
+              }}
+              onKeyDown={(e) => e.key === "Enter" && onRestoreHotel()}
+            >
+              подобрать отель
+            </span>
+          </>
+        ) : (
+          <>
+            {stay.nights} ноч. ·{" "}
+            {h ? `${h.stars ?? "—"}★` : status === "empty" ? "свободных не нашлось" : "подбираем…"}
+          </>
+        )}
       </div>
       {windows.map((w) => (
         <div key={w.kind} className="note">◔ {w.message}</div>
@@ -1028,6 +1162,25 @@ function StayCard({
           margin-left: 28px;
           background: var(--warn-bg);
           color: var(--warn);
+        }
+        .rm {
+          color: var(--ink-3);
+          font-size: 13px;
+          line-height: 1;
+          padding: 3px 4px;
+          border-radius: 6px;
+          opacity: 0;
+          transition: opacity 0.15s, color 0.15s, background 0.15s;
+        }
+        .card:hover .rm,
+        .card.hl .rm,
+        .rm:focus-visible { opacity: 1; }
+        .rm:hover { color: var(--danger); background: var(--danger-bg); }
+        .restore {
+          color: var(--accent);
+          font-weight: 500;
+          text-decoration: underline;
+          cursor: pointer;
         }
       `}</style>
     </div>

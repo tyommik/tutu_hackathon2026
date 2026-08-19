@@ -6,6 +6,7 @@ import {
   deriveStays,
   DEFAULT_PARTY,
   legId,
+  removeStop,
   slug,
   stayKey,
   tripTotal,
@@ -165,9 +166,10 @@ interface TripState {
   coords: Record<string, { lat: number; lng: number }>;
 
   addCity: (city: City, date: string, mode?: Mode) => void;
-  removeLastCity: () => void;
-  /** Сбрасывает начальную точку (доступно, пока нет ни одного плеча). */
-  clearOrigin: () => void;
+  /** Удаление города по крестику карточки плеча: город — это `to` плеча. */
+  removeCityAt: (legId: string) => void;
+  /** Убрать начальную точку; с плечами началом становится следующий город. */
+  removeOrigin: () => void;
   setParty: (party: Party) => void;
   clear: () => void;
   chooseOffer: (legId: string, offer: OfferSnapshot) => void;
@@ -186,6 +188,14 @@ interface TripState {
   applyAssistActions: (actions: TransferAction[]) => void;
   repair: () => void;
   chooseHotel: (key: string, hotel: HotelSnapshot) => void;
+  /** Убрать отель ночёвки: она остаётся в плане, но без отеля и бюджета. */
+  removeHotel: (key: string) => void;
+  /** Вернуть подбор отеля после отказа. */
+  restoreHotel: (key: string) => void;
+  /** Своим ходом: плечо остаётся в плане, но без билета и бюджета. */
+  removeTicket: (legId: string) => void;
+  /** Вернуть подбор билетов после «своим ходом». */
+  restoreTicket: (legId: string) => void;
   setHotelPick: (pick: TripState["hotelPick"]) => void;
   /** Заметка карточки: leg id, stay key или ORIGIN_NOTE. null — удалить. */
   setNote: (target: string, note: Note | null) => void;
@@ -325,35 +335,54 @@ export const useTrip = create<TripState>((set, get) => ({
     })),
 
   /**
-   * Удаление последнего города маршрута: убирает последнее плечо целиком.
-   * Точкой продолжения становится город, из которого это плечо уходило —
-   * добавление следующего города продолжит цепочку оттуда.
+   * Удаление города по крестику на карточке плеча (город — `to` плеча).
+   * Хвост отрезается; в середине смежные плечи сливаются в новое, и hydrate
+   * ищет его заново (чистая логика — removeStop в lib/trip). Начальная точка
+   * остаётся: legs[0].from не меняется, каким бы плечо ни удалили.
    */
-  removeLastCity: () => {
-    const { legs } = get();
-    if (legs.length === 0) return;
-    const dropped = legs[legs.length - 1];
-    const rest = legs.slice(0, -1);
+  removeCityAt: (id) => {
+    const { legs, stays } = get();
+    const ix = legs.findIndex((l) => l.id === id);
+    if (ix < 0) return;
+    // при слиянии исчезает и следующее плечо — чистим карты по обоим id
+    const removed = new Set(legs.slice(ix, ix + 2).map((l) => l.id));
+    const t = removeStop({ legs, stays }, id);
+    const drop = <T,>(map: Record<string, T>) =>
+      Object.fromEntries(Object.entries(map).filter(([k]) => !removed.has(k))) as Record<string, T>;
+    set((s) => ({
+      legs: t.legs,
+      stays: t.stays,
+      legStatus: drop(s.legStatus),
+      legOffers: drop(s.legOffers),
+      legUnavailable: drop(s.legUnavailable),
+    }));
+    void get().hydrate();
+  },
 
+  /**
+   * Убрать начальную точку. Без плеч точка просто снимается; с плечами
+   * удаляется и первое плечо — началом становится его город прибытия,
+   * откуда остальной маршрут уже продолжается сам.
+   */
+  removeOrigin: () => {
+    const { legs } = get();
+    if (legs.length === 0) {
+      set({ origin: null });
+      return;
+    }
+    const [first, ...rest] = legs;
     const drop = <T,>(map: Record<string, T>) => {
-      const { [dropped.id]: _, ...keep } = map;
+      const { [first.id]: _, ...keep } = map;
       return keep;
     };
     set((s) => ({
       legs: rest,
-      // маршрут схлопнулся до одной точки — она и остаётся началом
-      origin: rest.length === 0 ? { city: dropped.from, date: dropped.date } : s.origin,
+      origin: { city: first.to, date: rest[0]?.date ?? first.date },
       stays: deriveStays(rest, s.stays),
       legStatus: drop(s.legStatus),
       legOffers: drop(s.legOffers),
       legUnavailable: drop(s.legUnavailable),
     }));
-  },
-
-  /** Пока плеч нет, начальную точку можно просто снять и выбрать другую. */
-  clearOrigin: () => {
-    if (get().legs.length > 0) return;
-    set({ origin: null });
   },
 
   /** Смена состава = другие цены везде: сброс офферов и полный пере-поиск. */
@@ -521,9 +550,10 @@ export const useTrip = create<TripState>((set, get) => ({
   },
 
   chooseOffer: (id, offer) => {
-    // ручной выбор — pinned: авто-ремонт стыковок его не переопределяет
+    // ручной выбор — pinned: авто-ремонт стыковок его не переопределяет;
+    // заодно снимает «своим ходом», если человек передумал
     const legs = get().legs.map((l) =>
-      l.id === id ? { ...l, selectedOffer: offer, pinned: true } : l,
+      l.id === id ? { ...l, selectedOffer: offer, pinned: true, noTicket: undefined } : l,
     );
     set({ legs, stays: deriveStays(legs, get().stays) });
     get().repair();
@@ -531,8 +561,41 @@ export const useTrip = create<TripState>((set, get) => ({
   },
 
   chooseHotel: (key, hotel) => {
-    const stays = get().stays.map((s) => (stayKey(s) === key ? { ...s, selectedHotel: hotel } : s));
+    // ручной выбор в веере снимает и прежний отказ от отеля
+    const stays = get().stays.map((s) =>
+      stayKey(s) === key ? { ...s, selectedHotel: hotel, noHotel: undefined } : s,
+    );
     set({ stays });
+  },
+
+  removeTicket: (id) => {
+    const legs = get().legs.map((l) =>
+      l.id === id ? { ...l, selectedOffer: undefined, pinned: false, noTicket: true } : l,
+    );
+    // ночёвки пересчитываются: без оффера границы дают даты плеч
+    set({ legs, stays: deriveStays(legs, get().stays) });
+  },
+
+  restoreTicket: (id) => {
+    const legs = get().legs.map((l) => (l.id === id ? { ...l, noTicket: undefined } : l));
+    set((s) => ({ legs, legStatus: { ...s.legStatus, [id]: "idle" } }));
+    void get().hydrate();
+  },
+
+  removeHotel: (key) =>
+    set((s) => ({
+      stays: s.stays.map((x) =>
+        stayKey(x) === key ? { ...x, selectedHotel: undefined, noHotel: true } : x,
+      ),
+    })),
+
+  restoreHotel: (key) => {
+    set((s) => ({
+      stays: s.stays.map((x) => (stayKey(x) === key ? { ...x, noHotel: undefined } : x)),
+      // повторный поиск: кэш сервера отдаст те же варианты мгновенно
+      stayStatus: { ...s.stayStatus, [key]: "idle" },
+    }));
+    void get().hydrate();
   },
 
   setHotelPick: (pick) => set({ hotelPick: pick }),
@@ -594,7 +657,7 @@ export const useTrip = create<TripState>((set, get) => ({
     const state = get();
 
     for (const leg of state.legs) {
-      if (leg.selectedOffer || (state.legStatus[leg.id] ?? "idle") !== "idle") continue;
+      if (leg.noTicket || leg.selectedOffer || (state.legStatus[leg.id] ?? "idle") !== "idle") continue;
       set((s) => ({ legStatus: { ...s.legStatus, [leg.id]: "loading" } }));
       get().logStatus(legSearchingStatus(leg.from.name, leg.to.name));
       void post<{
@@ -613,7 +676,8 @@ export const useTrip = create<TripState>((set, get) => ({
         .then(({ offers, unavailable, meta }) => {
           set((s) => {
             const legs = s.legs.map((l, ix) => {
-              if (l.id !== leg.id || l.selectedOffer) return l;
+              // «своим ходом» могли поставить, пока поиск шёл — не навязываем
+              if (l.id !== leg.id || l.selectedOffer || l.noTicket) return l;
               // выбор с учётом стыковки: если предыдущее плечо уже нашлось,
               // берём самый дешёвый оффер, на который УСПЕВАЕМ
               // план восстановлен из ссылки: там был закреплён конкретный рейс
@@ -662,7 +726,7 @@ export const useTrip = create<TripState>((set, get) => ({
 
     for (const stay of get().stays) {
       const key = stayKey(stay);
-      if (stay.selectedHotel || (get().stayStatus[key] ?? "idle") !== "idle") continue;
+      if (stay.noHotel || stay.selectedHotel || (get().stayStatus[key] ?? "idle") !== "idle") continue;
       set((s) => ({ stayStatus: { ...s.stayStatus, [key]: "loading" } }));
       get().logStatus(staySearchingStatus(stay.city.name));
       void post<{ hotels: HotelSnapshot[] }>("/api/search", {
@@ -676,7 +740,10 @@ export const useTrip = create<TripState>((set, get) => ({
         .then(({ hotels }) => {
           set((s) => ({
             stays: s.stays.map((x) =>
-              stayKey(x) === key && !x.selectedHotel ? { ...x, selectedHotel: hotels[0] } : x,
+              // отказ мог случиться, пока поиск шёл — не навязываем отель
+              stayKey(x) === key && !x.selectedHotel && !x.noHotel
+                ? { ...x, selectedHotel: hotels[0] }
+                : x,
             ),
             stayHotels: { ...s.stayHotels, [key]: hotels },
             stayStatus: { ...s.stayStatus, [key]: hotels.length ? "ready" : "empty" },
@@ -706,7 +773,12 @@ export const useTrip = create<TripState>((set, get) => ({
     set({ checkout: { open: true, loading: true } });
     try {
       const { legs, stays, party, extras } = get();
-      const result = await post<CheckoutResult>("/api/checkout", { legs, stays, party });
+      // плечи «своим ходом» не оформляются — их цена уже в extras
+      const result = await post<CheckoutResult>("/api/checkout", {
+        legs: legs.filter((l) => !l.noTicket),
+        stays,
+        party,
+      });
       // свои траты Туту не проверяет и не продаёт — добавляем их отдельной
       // строкой, без ссылки на оформление, но внутри итога
       const own: CheckoutItem[] = extras.map((e) => ({
