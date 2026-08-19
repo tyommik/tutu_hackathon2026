@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useVoiceInput } from "./useVoiceInput";
 import { useTrip } from "@/store/useTrip";
 
 /**
@@ -34,6 +35,19 @@ const EXAMPLES = [
 export function StartScreen() {
   const start = useTrip((s) => s.start);
   const [text, setText] = useState("");
+  // запись/волна/распознавание — общий хук с чатом копилота
+  const vo = useVoiceInput((t) => setText((prev) => (prev ? `${prev} ${t}` : t)));
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // высота поля подстраивается под текст: одна строка — капсула,
+  // больше — поле растёт вниз, кнопки остаются наверху
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // scrollHeight не включает рамку, а box-sizing: border-box — включает
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }, [text]);
 
   const go = () => start(text);
 
@@ -45,18 +59,53 @@ export function StartScreen() {
       <p className="lead">Опишите поездку словами — соберём маршрут, найдём билеты и отели.</p>
 
       <div className="box">
-        <input
+        <textarea
+          ref={inputRef}
           value={text}
+          rows={1}
           autoFocus
-          placeholder="Из Воронежа в Португалию через Стамбул в сентябре, вдвоём"
+          placeholder="Из Воронежа в Португалию в сентябре, вдвоём"
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && go()}
-          aria-label="Опишите поездку"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              go();
+            }
+          }}
+          readOnly={vo.voice === "rec"}
+          aria-label="Опишите поездку. Shift+Enter — новая строка"
         />
-        <button className="btn primary" onClick={go}>
+        {vo.voice === "rec" && <canvas ref={vo.canvasRef} className="wave" />}
+        {vo.voice === "rec" ? (
+          <>
+            <button className="micbtn cancel" onClick={vo.cancel} aria-label="Отменить запись" title="Отменить запись">
+              ✕
+            </button>
+            <button
+              className="micbtn done"
+              onClick={vo.finish}
+              aria-label="Завершить запись и распознать"
+              title="Завершить запись и распознать"
+            >
+              ✓
+            </button>
+          </>
+        ) : (
+          <button
+            className="micbtn"
+            onClick={vo.start}
+            disabled={vo.voice === "busy"}
+            aria-label="Надиктовать голосом"
+            title="Надиктовать голосом"
+          >
+            {vo.voice === "busy" ? "…" : <span className="mic-ico" />}
+          </button>
+        )}
+        <button className="btn primary go" onClick={go}>
           Поехали!
         </button>
       </div>
+      {vo.error && <div className="voice-err">{vo.error}</div>}
 
       <div className="samples">
         {EXAMPLES.map((ex) => (
@@ -74,10 +123,19 @@ export function StartScreen() {
         или собрать маршрут вручную
       </button>
 
+      <footer className="credit">
+        Выполнил Шибаев Артём для{" "}
+        <a href="https://hackathon2026.tutu.ru" target="_blank" rel="noreferrer">
+          hackathon2026.tutu.ru
+        </a>
+      </footer>
+
       <style jsx>{`
         .screen {
-          /* ширина кнопки задана явно: от неё считается сдвиг пары */
-          --go-w: 132px;
+          /* одна ширина у поля и карточек: колонка собрана по общей оси */
+          --col-w: min(650px, 100%);
+          /* якорь для футера, прибитого к низу экрана */
+          position: relative;
           height: 100dvh;
           display: flex;
           flex-direction: column;
@@ -116,47 +174,102 @@ export function StartScreen() {
           line-height: 1.5;
         }
         .box {
-          display: flex;
-          gap: 10px;
-          width: min(680px, 100%);
-          /*
-           * Главная ось экрана — центр поля ввода, а не центр пары
-           * «поле + кнопка». Поэтому сдвигаем пару вправо ровно на кнопку:
-           * марка, подсказка и ссылка внизу встают с полем на одну линию.
-           */
-          margin-left: calc(var(--go-w) + 10px);
+          position: relative;
+          width: var(--col-w);
         }
-        .box input {
-          flex: 1;
-          min-width: 0;
+        .box textarea {
+          display: block;
+          width: 100%;
           font-size: 16px;
-          padding: 14px 18px;
-          border-radius: 999px;
+          line-height: 1.45;
+          /* справа место под микрофон и «Поехали!», наложенные на поле */
+          padding: 15px 178px 15px 20px;
+          border-radius: 26px;
           box-shadow: var(--shadow);
+          resize: none;
+          /* авторост считает высоту сам (см. эффект); выше — свой скролл */
+          overflow-y: auto;
+          max-height: 38dvh;
         }
-        .box input:focus {
+        .box textarea:focus {
           outline: none;
           border-color: var(--accent);
         }
-        .box :global(.btn) {
-          width: var(--go-w);
-          flex: none;
-          padding: 0;
+        .wave {
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          width: calc(100% - 172px);
+          height: 49px;
+          display: block;
+          border-radius: 24px;
+          background: var(--panel);
+          color: var(--accent);
+          pointer-events: none;
+        }
+        /*
+         * Кнопки прибиты к верху поля, а не к центру: при многострочном
+         * вводе поле растёт вниз, «Поехали!» и микрофон стоят на месте.
+         */
+        .box :global(.btn.go) {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+          height: 41px;
+          padding: 0 24px;
           font-size: 15px;
           border-radius: 999px;
           white-space: nowrap;
         }
-        /* узкий экран: пара уже не помещается со сдвигом — центрируем как есть */
-        @media (max-width: 900px) {
-          .box { margin-left: 0; }
+        .micbtn {
+          position: absolute;
+          right: 128px;
+          top: 10px;
+          width: 32px;
+          height: 32px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 50%;
+          color: var(--ink-3);
+          font-size: 15px;
+        }
+        .micbtn:hover { color: var(--accent); background: var(--panel-2); }
+        .micbtn.cancel {
+          right: 165px;
+          color: var(--warn);
+        }
+        .micbtn.cancel:hover { color: var(--warn); }
+        .micbtn.done {
+          color: var(--accent);
+          font-weight: 600;
+          animation: micpulse 1.2s ease-in-out infinite;
+        }
+        @keyframes micpulse {
+          50% { opacity: 0.45; }
+        }
+        .mic-ico {
+          display: block;
+          width: 18px;
+          height: 18px;
+          background: currentColor;
+          -webkit-mask: url(/mic.png) center / contain no-repeat;
+          mask: url(/mic.png) center / contain no-repeat;
+        }
+        .voice-err {
+          font-size: 13px;
+          color: var(--warn);
         }
         .samples {
           display: flex;
           gap: 12px;
           margin-top: 4px;
+          /* карточки той же ширины, что и поле: одна колонка, одна ось */
+          width: var(--col-w);
         }
         .sample {
-          width: 172px;
+          flex: 1 1 0;
+          min-width: 0;
           /* квадрат по просьбе из макета; низ — текст, эмодзи уходит вверх */
           aspect-ratio: 1;
           border-radius: 14px;
@@ -166,11 +279,11 @@ export function StartScreen() {
           display: flex;
           flex-direction: column;
           align-items: flex-start;
-          justify-content: flex-end;
-          gap: 5px;
-          padding: 14px;
+          gap: 7px;
+          padding: 16px;
           text-align: left;
           cursor: pointer;
+          overflow: hidden;
           transition: transform 0.12s ease, border-color 0.12s ease;
         }
         .sample:hover {
@@ -179,22 +292,21 @@ export function StartScreen() {
         }
         .sample .emoji {
           font-size: 30px;
-          margin-bottom: auto;
         }
         .sample .ttl {
-          font-size: 14px;
+          font-size: 18px;
           font-weight: 600;
           line-height: 1.25;
         }
         .sample .hint {
-          font-size: 11.5px;
+          font-size: 15.5px;
           color: var(--ink-2);
           line-height: 1.35;
         }
         /* узкий экран: квадраты в столбик не нужны — пусть станут строками */
         @media (max-width: 640px) {
-          .samples { flex-direction: column; width: min(680px, 100%); }
-          .sample { width: 100%; aspect-ratio: auto; }
+          .samples { flex-direction: column; }
+          .sample { aspect-ratio: auto; }
           .sample .emoji { margin-bottom: 0; }
         }
         .manual {
@@ -203,6 +315,21 @@ export function StartScreen() {
           padding: 4px 8px;
         }
         .manual:hover { color: var(--accent); }
+        .credit {
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 14px;
+          text-align: center;
+          font-size: 12.5px;
+          color: var(--ink-3);
+        }
+        .credit a {
+          color: var(--ink-2);
+          text-decoration: underline;
+          text-underline-offset: 3px;
+        }
+        .credit a:hover { color: var(--accent); }
       `}</style>
     </div>
   );

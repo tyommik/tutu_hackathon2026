@@ -5,6 +5,7 @@ import { renderLightMarkdown } from "@/lib/lightMarkdown";
 import { drawPhrase, FIRST_PHRASE } from "@/lib/thinking";
 import { groupMessages } from "@/lib/activityLog";
 import { pluralRu } from "@/lib/progress";
+import { useVoiceInput } from "./useVoiceInput";
 import { useTrip } from "@/store/useTrip";
 
 export function CopilotCard() {
@@ -34,15 +35,8 @@ export function CopilotCard() {
   const size = copilot.size;
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // idle → rec (идёт запись) → busy (ждём Whisper) → idle
-  const [voice, setVoice] = useState<"idle" | "rec" | "busy">("idle");
-  const [voiceErr, setVoiceErr] = useState("");
-  const recRef = useRef<MediaRecorder | null>(null);
-  // ✕ во время записи: остановить и выбросить звук, не ходя в распознавание
-  const cancelRef = useRef(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const waveCtxRef = useRef<AudioContext | null>(null);
-  const waveRafRef = useRef(0);
+  // запись/волна/распознавание — общий хук со стартовым экраном
+  const vo = useVoiceInput((t) => setText((prev) => (prev ? `${prev} ${t}` : t)));
 
   // высота поля подстраивается под текст; max-height ограничивает рост в CSS
   useEffect(() => {
@@ -73,137 +67,6 @@ export function CopilotCard() {
     return () => clearInterval(t);
   }, [copilot.loading]);
 
-  // Живую запись глушим при уходе со страницы, чтобы не оставить микрофон включённым.
-  useEffect(() => {
-    return () => {
-      const rec = recRef.current;
-      if (rec && rec.state !== "inactive") {
-        rec.onstop = null;
-        rec.stop();
-        rec.stream.getTracks().forEach((t) => t.stop());
-      }
-      stopWave();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /**
-   * Волна поверх поля ввода: каждый кадр берём RMS-уровень сигнала и рисуем
-   * ленту столбиков, бегущую справа налево. Уровни держим в замыкании —
-   * ре-рендеры реакта им не нужны.
-   */
-  const startWave = (stream: MediaStream) => {
-    const ctx = new AudioContext();
-    waveCtxRef.current = ctx;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
-    ctx.createMediaStreamSource(stream).connect(analyser);
-    const data = new Uint8Array(analyser.fftSize);
-    const levels: number[] = [];
-    const draw = () => {
-      waveRafRef.current = requestAnimationFrame(draw);
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      if (canvas.width !== w * dpr) canvas.width = w * dpr;
-      if (canvas.height !== h * dpr) canvas.height = h * dpr;
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / data.length);
-      const bar = 3 * dpr;
-      const gap = 2 * dpr;
-      const max = Math.floor((w * dpr) / (bar + gap));
-      levels.push(rms);
-      if (levels.length > max) levels.shift();
-      const g = canvas.getContext("2d");
-      if (!g) return;
-      g.clearRect(0, 0, canvas.width, canvas.height);
-      // цвет задан на canvas через CSS (var(--accent)) — берём вычисленный
-      g.fillStyle = getComputedStyle(canvas).color;
-      const mid = canvas.height / 2;
-      for (let i = 0; i < levels.length; i++) {
-        // тихий сигнал тоже виден: минимум 2px, дальше рост от уровня
-        const bh = Math.max(2 * dpr, Math.min(levels[i] * 3, 1) * (canvas.height - 4 * dpr));
-        const x = canvas.width - (levels.length - i) * (bar + gap);
-        g.fillRect(x, mid - bh / 2, bar, bh);
-      }
-    };
-    waveRafRef.current = requestAnimationFrame(draw);
-  };
-
-  const stopWave = () => {
-    cancelAnimationFrame(waveRafRef.current);
-    void waveCtxRef.current?.close().catch(() => {});
-    waveCtxRef.current = null;
-  };
-
-  const finishVoice = () => recRef.current?.stop();
-
-  const cancelVoice = () => {
-    cancelRef.current = true;
-    recRef.current?.stop();
-  };
-
-  const startVoice = async () => {
-    if (voice !== "idle") return;
-    setVoiceErr("");
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      setVoiceErr("Нет доступа к микрофону — разрешите его в браузере или введите текст руками.");
-      return;
-    }
-    const rec = new MediaRecorder(
-      stream,
-      MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? { mimeType: "audio/webm;codecs=opus" }
-        : undefined,
-    );
-    const chunks: Blob[] = [];
-    rec.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-    rec.onstop = async () => {
-      stopWave();
-      stream.getTracks().forEach((t) => t.stop());
-      if (cancelRef.current) {
-        cancelRef.current = false;
-        setVoice("idle");
-        recRef.current = null;
-        return;
-      }
-      setVoice("busy");
-      try {
-        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-        const form = new FormData();
-        form.append("audio", blob, "voice.webm");
-        const res = await fetch("/api/transcribe", { method: "POST", body: form });
-        const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-        if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-        if (data.text) {
-          setText((t) => (t ? `${t} ${data.text}` : data.text!));
-        } else {
-          setVoiceErr("Речь не распозналась — попробуйте ещё раз.");
-        }
-      } catch (e) {
-        setVoiceErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        setVoice("idle");
-        recRef.current = null;
-      }
-    };
-    recRef.current = rec;
-    rec.start();
-    startWave(stream);
-    setVoice("rec");
-  };
 
   const send = () => {
     const t = text.trim();
@@ -325,7 +188,7 @@ export function CopilotCard() {
         {copilot.unavailable && <div className="msg err">{copilot.unavailable}</div>}
       </div>
 
-      {voiceErr && <div className="voice-err">{voiceErr}</div>}
+      {vo.error && <div className="voice-err">{vo.error}</div>}
       <div className="row">
         <div className="field">
           <textarea
@@ -341,14 +204,14 @@ export function CopilotCard() {
               }
             }}
             disabled={copilot.loading}
-            readOnly={voice === "rec"}
+            readOnly={vo.voice === "rec"}
           />
-          {voice === "rec" && <canvas ref={canvasRef} className="wave" />}
-          {voice === "rec" ? (
+          {vo.voice === "rec" && <canvas ref={vo.canvasRef} className="wave" />}
+          {vo.voice === "rec" ? (
             <>
               <button
                 className="micbtn cancel"
-                onClick={cancelVoice}
+                onClick={vo.cancel}
                 aria-label="Отменить запись"
                 title="Отменить запись"
               >
@@ -356,7 +219,7 @@ export function CopilotCard() {
               </button>
               <button
                 className="micbtn done"
-                onClick={finishVoice}
+                onClick={vo.finish}
                 aria-label="Завершить запись и распознать"
                 title="Завершить запись и распознать"
               >
@@ -366,12 +229,12 @@ export function CopilotCard() {
           ) : (
             <button
               className="micbtn"
-              onClick={startVoice}
-              disabled={copilot.loading || voice === "busy"}
+              onClick={vo.start}
+              disabled={copilot.loading || vo.voice === "busy"}
               aria-label="Надиктовать голосом"
               title="Надиктовать голосом"
             >
-              {voice === "busy" ? "…" : <span className="mic-ico" />}
+              {vo.voice === "busy" ? "…" : <span className="mic-ico" />}
             </button>
           )}
         </div>
