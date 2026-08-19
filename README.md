@@ -8,6 +8,17 @@
 
 **У Wanderlog маршрут — картинка. У нас — корзина.**
 
+## Документация
+
+- [docs/AGENT-BRIEF.md](docs/AGENT-BRIEF.md) — справка для жюри: что смотреть
+  за 5 минут и как проверить каждое утверждение
+- [docs/SYSTEM-MAP.md](docs/SYSTEM-MAP.md) — карта системы: потоки, модули,
+  ключевые решения
+- [docs/MCP-FEEDBACK.md](docs/MCP-FEEDBACK.md) — находки по спецификации
+  Tutu MCP: находка → влияние на агентов → предложение
+- [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) — честный список: что реально,
+  что упрощено
+
 ## Запуск
 
 ```bash
