@@ -96,6 +96,10 @@ export function transferFoundStatus(
   return `${from} → ${to}: есть пересадка через ${accusative(hub)}, от ${fmtRub(price)}`;
 }
 
+export function transferAppliedStatus(from: string, to: string, hub: string): string {
+  return `${from} → ${to}: ставим пересадку через ${accusative(hub)}`;
+}
+
 export function transferEmptyStatus(from: string, to: string): string {
   return `${from} → ${to}: пересадка через хабы не нашлась`;
 }

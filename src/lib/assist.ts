@@ -26,9 +26,19 @@ export interface DraftLeg {
   mode?: "rail" | "avia" | "bus" | "any";
 }
 
+/** Действие «применить уже найденную пересадку» для плеча from → to. */
+export interface TransferAction {
+  from: string;
+  to: string;
+  /** Город пересадки из отчёта — когда система нашла несколько вариантов. */
+  hub?: string;
+}
+
 export interface AssistResult {
   reply: string;
   proposal?: { legs: DraftLeg[]; party?: Party };
+  /** Действия модели над планом; при встречном черновике игнорируются. */
+  actions?: TransferAction[];
 }
 
 export class AssistUnavailable extends Error {}
@@ -60,6 +70,9 @@ const SYSTEM_PROMPT = `Ты — копилот «Тропы», конструк�
 - Учитывай географию: соседние города соединяй наземным транспортом, дальние —
   самолётом ("any" позволяет системе выбрать самой). Поезда за пределами
   России Туту не продаёт.
+- Пересадку, которую система уже нашла для плеча без прямых вариантов,
+  применяй инструментом apply_transfer (города плеча как в плане) — это
+  ставит найденные рейсы как есть. Не пересобирай ради неё маршрут.
 - ХАБЫ ОБЯЗАТЕЛЬНЫ В ОБЕ СТОРОНЫ: если у города нет аэропорта (Манжерок,
   Старый Оскол, Белгород и любые малые города) — НИКОГДА не строй из него ИЛИ
   В НЕГО дальнее либо международное авиаплечо напрямую. Правило одинаково для
@@ -93,6 +106,24 @@ const SYSTEM_PROMPT = `Ты — копилот «Тропы», конструк�
   ложится в заметку к ней. Отвечай маркированным списком: место — одна строка
   зачем и сколько времени занимает. Без цен и расписаний, маршрут не трогай.
 - Отвечай кратко, по-русски, без воды. 2-5 предложений, если не просят больше.`;
+
+/**
+ * Режим осмысления: черновик применён, автопоиск завершился, и модель впервые
+ * видит, чем он закончился. Отчёт приходит user-сообщением, но написан
+ * системой — без этой рамки модель отвечала бы «пользователю», который
+ * ничего не писал.
+ */
+const REVIEW_PROMPT = `Сейчас придёт автоотчёт системы поиска по применённому черновику — это
+не сообщение пользователя, а обратная связь тебе. Осмысли результаты и
+ответь пользователю: коротко скажи, что нашлось, что нет, назови итоговый
+бюджет из отчёта. Если видишь проблему, которую решает изменение маршрута
+(плечо совсем без вариантов, город явно не распознан, неудачная дата), —
+вызови propose_trip с исправленным ПОЛНЫМ списком плеч и одной фразой
+объясни, что и зачем поменял. Если отчёт говорит, что для плеча без прямых
+вариантов система УЖЕ НАШЛА пересадку («есть пересадка через X»), — твоя
+задача её ПОСТАВИТЬ: вызови apply_transfer с городами этого плеча, а не
+пересобирай маршрут и не оставляй решение пользователю. Если всё в
+порядке — только прокомментируй. Цены называй только из отчёта.`;
 
 const PROPOSE_TRIP_TOOL = {
   type: "function",
@@ -132,6 +163,42 @@ const PROPOSE_TRIP_TOOL = {
     },
   },
 } as const;
+
+const APPLY_TRANSFER_TOOL = {
+  type: "function",
+  function: {
+    name: "apply_transfer",
+    description:
+      "Применить уже НАЙДЕННУЮ системой пересадку для плеча без прямых вариантов: " +
+      "плечо заменится двумя с теми самыми рейсами, что нашла система. Вызывай, " +
+      "когда отчёт говорит «есть пересадка через X», или когда пользователь просит " +
+      "её поставить. Не перестраивай ради этого маршрут через propose_trip.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "город отправления плеча, как в плане" },
+        to: { type: "string", description: "город прибытия плеча, как в плане" },
+        hub: { type: "string", description: "город пересадки из отчёта, если вариантов несколько" },
+      },
+      required: ["from", "to"],
+    },
+  },
+} as const;
+
+/**
+ * Действие модели «поставить пересадку». Мусор отбрасываем молча, как и в
+ * validateParty: битый hub не отменяет действие — систему выберет лучший.
+ */
+export function validateTransferAction(raw: unknown): TransferAction | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const { from, to, hub } = raw as Record<string, unknown>;
+  if (typeof from !== "string" || typeof to !== "string" || !from.trim() || !to.trim()) return null;
+  return {
+    from: from.trim(),
+    to: to.trim(),
+    ...(typeof hub === "string" && hub.trim() ? { hub: hub.trim() } : {}),
+  };
+}
 
 /** Компактный текстовый контекст плана для LLM. */
 export function buildTripContext(trip: Trip, party?: Party): string {
@@ -263,6 +330,7 @@ export async function assist(
   trip: Trip,
   history: ChatMessage[] = [],
   party?: Party,
+  kind?: "review",
 ): Promise<AssistResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -286,10 +354,11 @@ export async function assist(
         { role: "system", content: SYSTEM_PROMPT },
         { role: "system", content: todayContext() },
         { role: "system", content: `Текущий план:\n${buildTripContext(trip, party)}` },
+        ...(kind === "review" ? [{ role: "system", content: REVIEW_PROMPT } as const] : []),
         ...history.slice(-8),
         { role: "user", content: message },
       ],
-      tools: [PROPOSE_TRIP_TOOL],
+      tools: [PROPOSE_TRIP_TOOL, APPLY_TRANSFER_TOOL],
       temperature: 0.4,
       // reasoning-модели (DeepSeek v4, o-серия) тратят токены на размышления
       // ДО ответа — низкий лимит съедался целиком и tool call не успевал
@@ -330,6 +399,23 @@ export async function assist(
     } catch {
       // некорректные аргументы инструмента — падаем в текстовый ответ
     }
+  }
+
+  const actions = (msg.tool_calls ?? [])
+    .filter((t) => t.function?.name === "apply_transfer")
+    .map((t) => {
+      try {
+        return validateTransferAction(JSON.parse(t.function!.arguments ?? ""));
+      } catch {
+        return null;
+      }
+    })
+    .filter((a): a is TransferAction => a !== null);
+  if (actions.length > 0) {
+    return {
+      reply: msg.content?.trim() || "Ставлю найденную пересадку в план.",
+      actions,
+    };
   }
 
   return { reply: msg.content?.trim() || "Не понял запрос — уточните, что поменять в маршруте." };

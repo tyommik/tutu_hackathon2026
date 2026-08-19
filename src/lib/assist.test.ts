@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTripContext, draftSummary, todayContext, validateDraft, validateParty } from "./assist";
+import {
+  buildTripContext,
+  draftSummary,
+  todayContext,
+  validateDraft,
+  validateParty,
+  validateTransferAction,
+} from "./assist";
 import type { Trip } from "./trip";
 
 describe("todayContext", () => {
@@ -74,6 +81,34 @@ describe("validateDraft", () => {
     expect(
       validateDraft({ legs: Array.from({ length: 15 }, () => ({ from: "A", to: "B", date: "2026-09-10" })) }),
     ).toBeNull();
+  });
+});
+
+describe("validateTransferAction", () => {
+  it("принимает плечо и необязательный хаб", () => {
+    expect(validateTransferAction({ from: "Москва", to: "Бостон", hub: "Стамбул" })).toEqual({
+      from: "Москва",
+      to: "Бостон",
+      hub: "Стамбул",
+    });
+    expect(validateTransferAction({ from: "Москва", to: "Бостон" })).toEqual({
+      from: "Москва",
+      to: "Бостон",
+    });
+  });
+
+  it("отклоняет мусор: пустые города, не-строки, не-объект", () => {
+    expect(validateTransferAction(null)).toBeNull();
+    expect(validateTransferAction({ from: "", to: "Бостон" })).toBeNull();
+    expect(validateTransferAction({ from: "Москва" })).toBeNull();
+    expect(validateTransferAction({ from: 1, to: "Бостон" })).toBeNull();
+  });
+
+  it("хаб-мусор молча отбрасывается, действие остаётся", () => {
+    expect(validateTransferAction({ from: "Москва", to: "Бостон", hub: 7 })).toEqual({
+      from: "Москва",
+      to: "Бостон",
+    });
   });
 });
 

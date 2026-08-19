@@ -9,6 +9,7 @@ import {
   legSearchingStatus,
   stayFoundStatus,
   staySearchingStatus,
+  transferAppliedStatus,
   transferFoundStatus,
   transferSearchingStatus,
   type ChatMessage,
@@ -85,6 +86,15 @@ describe("статусные строки", () => {
 
   it("отели без цены в выдаче — статус без «от …»", () => {
     expect(stayFoundStatus("Стамбул", undefined, 6)).toBe("Отели в Стамбуле: 6 вариантов");
+  });
+
+  it("пересадка: применение с хабом в винительном падеже", () => {
+    expect(transferAppliedStatus("Москва", "Бостон", "Стамбул")).toBe(
+      "Москва → Бостон: ставим пересадку через Стамбул",
+    );
+    expect(transferAppliedStatus("Москва", "Бостон", "Варшава")).toBe(
+      "Москва → Бостон: ставим пересадку через Варшаву",
+    );
   });
 
   it("пересадка: подбор и находка", () => {

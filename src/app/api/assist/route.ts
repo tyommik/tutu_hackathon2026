@@ -11,6 +11,8 @@ export async function POST(req: Request) {
     trip?: Trip;
     history?: Array<{ role: "user" | "assistant"; content: string }>;
     party?: Party;
+    /** review — автоотчёт системы поиска, а не сообщение пользователя. */
+    kind?: string;
   };
   try {
     body = await req.json();
@@ -24,7 +26,13 @@ export async function POST(req: Request) {
   const trip: Trip = body.trip ?? { legs: [], stays: [] };
 
   try {
-    const result = await assist(message, trip, body.history ?? [], body.party);
+    const result = await assist(
+      message,
+      trip,
+      body.history ?? [],
+      body.party,
+      body.kind === "review" ? "review" : undefined,
+    );
     return NextResponse.json(result);
   } catch (e) {
     if (e instanceof AssistUnavailable) {
