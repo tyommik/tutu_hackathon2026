@@ -41,3 +41,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# IDE JetBrains: локальные настройки, в репозитории им не место
+.idea/
