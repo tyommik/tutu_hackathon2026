@@ -41,6 +41,13 @@ function fmt(n: number) {
   return Math.round(n).toLocaleString("ru-RU") + " ₽";
 }
 
+/**
+ * С настроенными тайлами отели выбираются на главной карте (пины поверх
+ * маршрута, зум в город); без них городской зум там пуст — остаётся
+ * прежняя отдельная панель с собственной картой.
+ */
+const MAP_PICK = !!process.env.NEXT_PUBLIC_TILES_URL;
+
 function toggle<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 }
@@ -83,7 +90,7 @@ export function VariantsDrawer({
   onClose: () => void;
   onOpenRooms: (hotel: HotelSnapshot, stay: Stay) => void;
 }) {
-  const { legOffers, stayHotels, party, coords, chooseOffer, chooseHotel } = useTrip();
+  const { legOffers, stayHotels, party, coords, chooseOffer, chooseHotel, setHotelPick } = useTrip();
   const [hoverHotel, setHoverHotel] = useState<string | null>(null);
 
   const isAviaLeg =
@@ -251,9 +258,26 @@ export function VariantsDrawer({
       ? (resolveCoords(target.stay.city.name) ?? coords[target.stay.city.name])
       : undefined;
 
+  // синк пинов на главную карту: сигнатура по id бережёт от цикла ре-рендеров
+  const pickKey = target?.kind === "stay" ? stayKey(target.stay) : null;
+  const pickSig = visibleHotels.map((h) => h.hotelId).join(",");
+  useEffect(() => {
+    if (!MAP_PICK) return;
+    if (pickKey) setHotelPick({ key: pickKey, hotels: visibleHotels, hoveredId: hoverHotel });
+    else setHotelPick(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickKey, pickSig, hoverHotel]);
+  // размонтирование веера не должно оставить пины на карте
+  useEffect(
+    () => () => {
+      if (MAP_PICK) useTrip.getState().setHotelPick(null);
+    },
+    [],
+  );
+
   return (
     <div className={`drawer${open ? " open" : ""}`}>
-      {target?.kind === "stay" && (
+      {target?.kind === "stay" && !MAP_PICK && (
         <HotelMap
           key={stayKey(target.stay)}
           hotels={visibleHotels}

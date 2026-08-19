@@ -1,12 +1,17 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LAND_D } from "@/lib/land";
-import { legPathD, priceLabelPos, project, VB } from "@/lib/geo";
+import { fitRect, HOME, legPathD, priceLabelPos, project, svgTiles, VB, WORLD } from "@/lib/geo";
+import { tileUrl } from "@/lib/tiles";
 import { cityOf } from "@/lib/aviaFilters";
-import { cityId, stayKey, type Leg, type Stay } from "@/lib/trip";
+import { cityId, stayKey, type HotelSnapshot, type Leg, type Stay } from "@/lib/trip";
 import { resolveCoords } from "@/lib/cities";
 import { useTrip } from "@/store/useTrip";
+
+const TILES = process.env.NEXT_PUBLIC_TILES_URL;
+const TILES_DARK = process.env.NEXT_PUBLIC_TILES_URL_DARK;
+const ATTRIBUTION = process.env.NEXT_PUBLIC_TILES_ATTRIBUTION ?? "© MapTiler © OpenStreetMap";
 
 const MODE_COLOR: Record<string, string> = {
   avia: "var(--avia)",
@@ -33,18 +38,25 @@ export function MapCanvas({
   hoveredStay,
   onHoverStay,
   onOpenStay,
+  onOpenRooms,
+  onHotelChosen,
 }: {
   hoveredLeg: string | null;
   onHover: (id: string | null) => void;
   hoveredStay: string | null;
   onHoverStay: (key: string | null) => void;
   onOpenStay: (stay: Stay) => void;
+  onOpenRooms: (hotel: HotelSnapshot, stay: Stay) => void;
+  /** Отель выбран с карты — веер отелей пора закрыть. */
+  onHotelChosen: () => void;
 }) {
   const legs = useTrip((s) => s.legs);
   const stays = useTrip((s) => s.stays);
   const origin = useTrip((s) => s.origin);
   const legStatus = useTrip((s) => s.legStatus);
   const coordsCache = useTrip((s) => s.coords);
+  const pick = useTrip((s) => s.hotelPick);
+  const chooseHotel = useTrip((s) => s.chooseHotel);
 
   /** Координаты города: свои поля → справочник/хабы → кэш с сервера. */
   const coordsOf = (c: { name: string; lat?: number; lng?: number }) => {
@@ -52,7 +64,7 @@ export function MapCanvas({
     return resolveCoords(c.name) ?? coordsCache[c.name];
   };
   const svgRef = useRef<SVGSVGElement>(null);
-  const [view, setView] = useState<View>({ x: 0, y: 0, w: VB.W, h: VB.H });
+  const [view, setView] = useState<View>({ ...HOME });
   const drag = useRef<{ x: number; y: number } | null>(null);
   /**
    * Точка нажатия и признак протаскивания. Карту тащат, взявшись за любое
@@ -63,12 +75,104 @@ export function MapCanvas({
   const down = useRef<{ x: number; y: number } | null>(null);
   const moved = useRef(false);
 
+  /**
+   * Подложка: реальные тайлы MapTiler или схематичный контур. Тайлы — только
+   * при заданном NEXT_PUBLIC_TILES_URL; выбор пользователя переживает
+   * перезагрузку, а без сети схема остаётся полноценным режимом.
+   */
+  const [tiled, setTiled] = useState(false);
+  const [dark, setDark] = useState(false);
+  const [screenW, setScreenW] = useState(1200);
+  useEffect(() => {
+    if (TILES) setTiled(localStorage.getItem("tropa.mapTiles") !== "off");
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    setDark(mq.matches);
+    const onMq = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener("change", onMq);
+    const measure = () => setScreenW(svgRef.current?.clientWidth ?? 1200);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => {
+      mq.removeEventListener("change", onMq);
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+  const tileTemplate = (dark && TILES_DARK) || TILES;
+  const showTiles = tiled && !!tileTemplate;
+
+  /** Карточка отеля у точки клика по пину (координаты внутри .map-wrap). */
+  const [card, setCard] = useState<{ hotel: HotelSnapshot; x: number; y: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // животрепещущие значения для колбэков анимации и эффекта выбора отеля
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const tiledRef = useRef(tiled);
+  tiledRef.current = tiled;
+
+  /**
+   * Плавный перелёт вида. Ширина интерполируется в лог-пространстве:
+   * зум «регион → квартал» линейной интерполяцией схлопывается рывком
+   * в первом кадре и дальше еле ползёт.
+   */
+  const animRef = useRef(0);
+  const animateTo = useCallback((target: View) => {
+    cancelAnimationFrame(animRef.current);
+    const from = { ...viewRef.current };
+    const start = performance.now();
+    const DUR = 550;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / DUR);
+      const e = 1 - (1 - t) ** 3;
+      const w = from.w * (target.w / from.w) ** e;
+      const h = from.h * (target.h / from.h) ** e;
+      const cx = from.x + from.w / 2 + (target.x + target.w / 2 - (from.x + from.w / 2)) * e;
+      const cy = from.y + from.h / 2 + (target.y + target.h / 2 - (from.y + from.h / 2)) * e;
+      setView({ x: cx - w / 2, y: cy - h / 2, w, h });
+      if (t < 1) animRef.current = requestAnimationFrame(step);
+    };
+    animRef.current = requestAnimationFrame(step);
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(animRef.current), []);
+
+  /**
+   * Вход и выход из выбора отеля: карта запоминает вид, летит к пинам
+   * (на схеме городской зум пуст — тайлы включаются сами), а после выбора
+   * или закрытия веера возвращает всё как было.
+   */
+  const savedView = useRef<View | null>(null);
+  const savedTiled = useRef<boolean | null>(null);
+  const pickSig = pick ? `${pick.key}:${pick.hotels.map((h) => h.hotelId).join(",")}` : null;
+  useEffect(() => {
+    setCard(null);
+    if (pick) {
+      const pts = pick.hotels
+        .filter((h) => h.lat !== undefined && h.lng !== undefined)
+        .map((h) => project(h.lat!, h.lng!));
+      const target = fitRect(pts, VB.H / VB.W);
+      if (!target) return;
+      if (savedView.current === null) {
+        savedView.current = { ...viewRef.current };
+        savedTiled.current = tiledRef.current;
+        if (TILES && !tiledRef.current) setTiled(true);
+      }
+      animateTo(target);
+    } else if (savedView.current) {
+      animateTo(savedView.current);
+      savedView.current = null;
+      if (savedTiled.current === false) setTiled(false);
+      savedTiled.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickSig]);
+
   const zoomAt = useCallback((k: number, cx?: number, cy?: number) => {
+    // карточка отеля прибита к экранной точке клика — при смене вида врёт
+    setCard((c) => (c ? null : c));
     setView((v) => {
-      // нижняя граница была 200, пока подписи росли вместе с зумом; теперь
-      // они держат экранный размер, и глубокий зум разводит тесных соседей
-      // (Ярославль/Кострома) вместо бессмысленного укрупнения картинки
-      const nw = Math.min(2400, Math.max(40, v.w * k));
+      // от целого мира до городского квартала: подписи держат экранный
+      // размер, так что глубокий зум разводит и города, и пины отелей
+      const nw = Math.min(WORLD, Math.max(0.1, v.w * k));
       const real = nw / v.w;
       const px = cx ?? v.x + v.w / 2;
       const py = cy ?? v.y + v.h / 2;
@@ -112,8 +216,10 @@ export function MapCanvas({
     if (!stayByCity.has(id)) stayByCity.set(id, st);
   }
 
+  const pickStay = pick ? stays.find((st) => stayKey(st) === pick.key) : undefined;
+
   return (
-    <div className="map-wrap">
+    <div className="map-wrap" ref={wrapRef}>
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
@@ -137,7 +243,10 @@ export function MapCanvas({
           if (down.current) {
             const off =
               Math.abs(e.clientX - down.current.x) + Math.abs(e.clientY - down.current.y);
-            if (off > 4) moved.current = true;
+            if (off > 4) {
+              moved.current = true;
+              setCard((c) => (c ? null : c));
+            }
           }
           const ctm = svgRef.current!.getScreenCTM()!;
           const dx = (e.clientX - drag.current.x) / ctm.a;
@@ -148,7 +257,22 @@ export function MapCanvas({
         onPointerUp={() => (drag.current = null)}
         style={{ cursor: drag.current ? "grabbing" : "grab" }}
       >
-        <path d={LAND_D} fill="var(--land)" stroke="var(--line-strong)" strokeWidth={0.6 * s} opacity={0.9} />
+        {showTiles ? (
+          svgTiles(view, screenW).map((t) => (
+            <image
+              key={t.key}
+              href={tileUrl(tileTemplate!, t)}
+              x={t.sx}
+              y={t.sy}
+              // лёгкий напуск закрывает волосяные швы между тайлами
+              width={t.size * 1.004}
+              height={t.size * 1.004}
+              preserveAspectRatio="none"
+            />
+          ))
+        ) : (
+          <path d={LAND_D} fill="var(--land)" stroke="var(--line-strong)" strokeWidth={0.6 * s} opacity={0.9} />
+        )}
 
         {legs.map((l) => {
           const fromC = coordsOf(l.from);
@@ -235,7 +359,8 @@ export function MapCanvas({
           if (!cc) return null;
           const p = project(cc.lat, cc.lng);
           const st = stayByCity.get(id);
-          const right = p.x > VB.W * 0.78;
+          // у правого края видимой области подпись уходит влево от точки
+          const right = p.x > view.x + view.w * 0.78;
           const hot = !!st && hoveredStay === stayKey(st);
           const hotel = st?.selectedHotel;
           return (
@@ -300,13 +425,120 @@ export function MapCanvas({
             </g>
           );
         })}
+
+        {/* пины отелей: веер синхронизирует свой отфильтрованный список */}
+        {pick &&
+          pick.hotels.map((h) => {
+            if (h.lat === undefined || h.lng === undefined) return null;
+            const p = project(h.lat, h.lng);
+            const label = fmt(h.price);
+            const w = (label.length * 6.4 + 16) * s;
+            const hgt = 18 * s;
+            const hot = pick.hoveredId === h.hotelId || card?.hotel.hotelId === h.hotelId;
+            const sel = pickStay?.selectedHotel?.hotelId === h.hotelId;
+            return (
+              <g
+                key={h.hotelId}
+                style={{ cursor: "pointer" }}
+                onClick={(e) => {
+                  if (moved.current) return;
+                  const r = wrapRef.current!.getBoundingClientRect();
+                  setCard({ hotel: h, x: e.clientX - r.left, y: e.clientY - r.top });
+                }}
+              >
+                <rect
+                  x={p.x - w / 2}
+                  y={p.y - hgt / 2}
+                  width={w}
+                  height={hgt}
+                  rx={9 * s}
+                  fill={hot || sel ? "var(--hotel)" : "var(--panel)"}
+                  stroke="var(--hotel)"
+                  strokeWidth={(hot ? 2 : 1.2) * s}
+                />
+                <text
+                  x={p.x}
+                  y={p.y + 3.6 * s}
+                  textAnchor="middle"
+                  fontSize={10.5 * s}
+                  fontWeight={600}
+                  fill={hot || sel ? "var(--panel)" : "var(--hotel)"}
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
       </svg>
+
+      {card && pick && pickStay && (
+        <div
+          className="hcard"
+          style={{
+            left: Math.max(10, Math.min((wrapRef.current?.clientWidth ?? 600) - 240, card.x - 115)),
+            top: Math.max(10, card.y - 200),
+          }}
+        >
+          {card.hotel.photo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img className="ph" src={card.hotel.photo} alt="" />
+          ) : (
+            <div className="ph empty">фото нет</div>
+          )}
+          <div className="body">
+            <div className="nm">{card.hotel.name}</div>
+            <div className="meta">
+              {card.hotel.stars ? `${card.hotel.stars}★` : "без звёзд"}
+              {card.hotel.rating ? ` · ${card.hotel.rating.toFixed(1)}` : ""}
+              {card.hotel.address ? ` · ${card.hotel.address}` : ""}
+            </div>
+            <div className="meta">
+              <b>{fmt(card.hotel.price)}</b> за {pickStay.nights} ноч. ·{" "}
+              {fmt(card.hotel.price / pickStay.nights)}/ночь
+            </div>
+            <div className="acts">
+              <button className="btn sm" onClick={() => onOpenRooms(card.hotel, pickStay)}>
+                Выбрать номер
+              </button>
+              <button
+                className="btn primary sm"
+                onClick={() => {
+                  chooseHotel(pick.key, card.hotel);
+                  setCard(null);
+                  onHotelChosen();
+                }}
+              >
+                Ок
+              </button>
+              <button className="btn sm" onClick={() => setCard(null)} aria-label="Закрыть карточку">
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="zoomctl">
         <button className="btn" aria-label="Приблизить" onClick={() => zoomAt(1 / 1.35)}>+</button>
         <button className="btn" aria-label="Отдалить" onClick={() => zoomAt(1.35)}>−</button>
-        <button className="btn" aria-label="Весь маршрут" onClick={() => setView({ x: 0, y: 0, w: VB.W, h: VB.H })}>⌂</button>
+        <button className="btn" aria-label="Весь маршрут" onClick={() => setView({ ...HOME })}>⌂</button>
+        {TILES && (
+          <button
+            className="btn"
+            aria-label={tiled ? "Схематичная карта" : "Подробная карта"}
+            title={tiled ? "Схематичная карта" : "Подробная карта"}
+            onClick={() =>
+              setTiled((t) => {
+                localStorage.setItem("tropa.mapTiles", t ? "off" : "on");
+                return !t;
+              })
+            }
+          >
+            {tiled ? "▤" : "🗺"}
+          </button>
+        )}
       </div>
+      {showTiles && <div className="attr">{ATTRIBUTION}</div>}
 
       <style jsx>{`
         .map-wrap {
@@ -334,6 +566,59 @@ export function MapCanvas({
           display: flex;
           flex-direction: column;
           gap: 6px;
+        }
+        .hcard {
+          position: absolute;
+          width: 230px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          box-shadow: var(--shadow);
+          overflow: hidden;
+          z-index: 30;
+        }
+        .hcard .ph {
+          display: block;
+          width: 100%;
+          height: 96px;
+          object-fit: cover;
+        }
+        .hcard .ph.empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--ink-3);
+          font-size: 12px;
+          background: var(--panel-2);
+        }
+        .hcard .body {
+          padding: 8px 10px 10px;
+        }
+        .hcard .nm {
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1.3;
+        }
+        .hcard .meta {
+          font-size: 11.5px;
+          color: var(--ink-2);
+          margin-top: 2px;
+        }
+        .hcard .acts {
+          display: flex;
+          gap: 6px;
+          margin-top: 8px;
+        }
+        .attr {
+          position: absolute;
+          left: 8px;
+          bottom: 6px;
+          font-size: 10px;
+          color: var(--ink-3);
+          background: color-mix(in srgb, var(--panel) 72%, transparent);
+          padding: 1px 6px;
+          border-radius: 6px;
+          pointer-events: none;
         }
         .zoomctl :global(.btn) {
           width: 36px;

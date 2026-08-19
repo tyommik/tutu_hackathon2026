@@ -111,6 +111,9 @@ export default function Home() {
           onHoverStay={setHoveredStay}
           // клик по городу открывает тот же веер, что и карточка отеля в плане
           onOpenStay={(stay) => setVariants({ kind: "stay", stay })}
+          onOpenRooms={(hotel, stay) => setRoomsFor({ hotel, stay })}
+          // выбор отеля с карты закрывает веер — пины гаснут, вид возвращается
+          onHotelChosen={() => setVariants(null)}
         />
         <Timeline
           hoveredLeg={hoveredLeg}

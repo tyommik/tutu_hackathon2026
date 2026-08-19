@@ -121,6 +121,12 @@ interface TripState {
   legTransfers: Record<string, LegTransferState>;
   stayStatus: Record<string, FetchStatus>;
   stayHotels: Record<string, HotelSnapshot[]>;
+  /**
+   * Выбор отеля на главной карте: веер отелей синхронизирует сюда свой
+   * отфильтрованный список, карта зумируется к пинам; null — пины скрыты.
+   * hoveredId — карточка под курсором в веере, карта подсвечивает её пин.
+   */
+  hotelPick: { key: string; hotels: HotelSnapshot[]; hoveredId?: string | null } | null;
   checkout: { open: boolean; loading: boolean; result?: CheckoutResult };
   optimizer: { open: boolean; loading: boolean; result?: OptimizeResponse };
   copilot: {
@@ -180,6 +186,7 @@ interface TripState {
   applyAssistActions: (actions: TransferAction[]) => void;
   repair: () => void;
   chooseHotel: (key: string, hotel: HotelSnapshot) => void;
+  setHotelPick: (pick: TripState["hotelPick"]) => void;
   /** Заметка карточки: leg id, stay key или ORIGIN_NOTE. null — удалить. */
   setNote: (target: string, note: Note | null) => void;
   hydrate: () => Promise<void>;
@@ -268,6 +275,7 @@ export const useTrip = create<TripState>((set, get) => ({
   legResolved: {},
   stayStatus: {},
   stayHotels: {},
+  hotelPick: null,
   transfer: { open: false },
   legTransfers: {},
   checkout: { open: false, loading: false },
@@ -526,6 +534,8 @@ export const useTrip = create<TripState>((set, get) => ({
     const stays = get().stays.map((s) => (stayKey(s) === key ? { ...s, selectedHotel: hotel } : s));
     set({ stays });
   },
+
+  setHotelPick: (pick) => set({ hotelPick: pick }),
 
   setNote: (target, note) => {
     const value = note ?? undefined;
