@@ -380,7 +380,12 @@ export function HotelModal({
         .hero {
           width: 100%;
           height: 280px;
-          object-fit: cover;
+          /*
+           * contain, а не cover: отельные фото часто вертикальные, и cover
+           * срезал им верх и низ. Целиком с полосами по бокам честнее, чем
+           * красиво, но без половины кадра; фон полос — panel-2.
+           */
+          object-fit: contain;
           border-radius: 12px;
           display: block;
           background: var(--panel-2);
