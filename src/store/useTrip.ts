@@ -153,6 +153,8 @@ interface TripState {
   closeOptimizer: () => void;
   applySuggestion: (s: OptimizeSuggestion) => void;
   askCopilot: (message: string, opts?: { noteFor?: string }) => Promise<void>;
+  /** Оборвать текущую генерацию; возвращает снятую с отправки фразу. */
+  stopCopilot: () => string | undefined;
   setCopilotSize: (size: CopilotSize) => void;
   setPlanOpen: (open: boolean) => void;
   syncCoords: () => void;
@@ -192,16 +194,21 @@ const wideSearchInFlight = new Set<string>();
 /** Города, по которым уже запрошены координаты (дедуп). */
 const coordsInFlight = new Set<string>();
 
-async function post<T>(url: string, body: unknown): Promise<T> {
+async function post<T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data;
 }
+
+// Контроллер вне стейта: подписчикам стора он не нужен, а abort() не должен
+// вызывать ре-рендеры.
+let copilotAbort: AbortController | null = null;
 
 export const useTrip = create<TripState>((set, get) => ({
   legs: [],
@@ -773,6 +780,7 @@ export const useTrip = create<TripState>((set, get) => ({
         size: opts?.noteFor && s.copilot.size === "collapsed" ? "normal" : s.copilot.size,
       },
     }));
+    copilotAbort = new AbortController();
     try {
       const { legs: curLegs, stays, party } = get();
       const r = await post<{
@@ -784,6 +792,7 @@ export const useTrip = create<TripState>((set, get) => ({
       }>(
         "/api/assist",
         { message, trip: { legs: curLegs, stays }, history, party },
+        copilotAbort.signal,
       );
       set((s) => ({
         copilot: {
@@ -821,6 +830,8 @@ export const useTrip = create<TripState>((set, get) => ({
         void get().hydrate();
       }
     } catch (e) {
+      // остановка пользователем — не ошибка: stopCopilot уже прибрал состояние
+      if (e instanceof DOMException && e.name === "AbortError") return;
       set((s) => ({
         copilot: {
           ...s.copilot,
@@ -830,6 +841,24 @@ export const useTrip = create<TripState>((set, get) => ({
         },
       }));
     }
+  },
+
+  stopCopilot: () => {
+    const cop = get().copilot;
+    if (!cop.loading) return undefined;
+    copilotAbort?.abort();
+    // снимаем оптимистично добавленную фразу — она вернётся в поле черновиком
+    const messages = [...cop.messages];
+    const last = messages[messages.length - 1];
+    let draft: string | undefined;
+    if (last?.role === "user") {
+      draft = last.content;
+      messages.pop();
+    }
+    set((s) => ({
+      copilot: { ...s.copilot, messages, loading: false, noteFor: undefined },
+    }));
+    return draft;
   },
 
   /** Демо-легенда из дизайн-дока: Оскол → Стамбул → Иберия → Оскол. */

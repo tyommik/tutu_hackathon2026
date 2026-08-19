@@ -6,7 +6,7 @@ import { drawPhrase, FIRST_PHRASE } from "@/lib/thinking";
 import { useTrip } from "@/store/useTrip";
 
 export function CopilotCard() {
-  const { copilot, askCopilot, setCopilotSize } = useTrip();
+  const { copilot, askCopilot, stopCopilot, setCopilotSize } = useTrip();
   const [text, setText] = useState("");
   const [phrase, setPhrase] = useState(FIRST_PHRASE);
   /**
@@ -326,9 +326,23 @@ export function CopilotCard() {
             </button>
           )}
         </div>
-        <button className="btn" onClick={send} disabled={copilot.loading || !text.trim()}>
-          →
-        </button>
+        {copilot.loading ? (
+          <button
+            className="btn stop"
+            onClick={() => {
+              const draft = stopCopilot();
+              if (draft) setText(draft);
+            }}
+            aria-label="Остановить генерацию"
+            title="Остановить генерацию"
+          >
+            ■
+          </button>
+        ) : (
+          <button className="btn" onClick={send} disabled={!text.trim()} aria-label="Отправить">
+            →
+          </button>
+        )}
       </div>
 
       <style jsx>{`
@@ -493,6 +507,7 @@ export function CopilotCard() {
           50% { opacity: 0.45; }
         }
         .row .btn { padding: 9px 16px; font-size: 15px; }
+        .row .btn.stop { color: var(--warn); }
       `}</style>
     </div>
   );
