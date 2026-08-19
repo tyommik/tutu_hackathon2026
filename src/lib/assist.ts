@@ -365,7 +365,10 @@ export async function assist(
       max_tokens: 64_000,
       reasoning: { effort: "low" },
     }),
-    signal: AbortSignal.timeout(60_000),
+    // 180 с: обычный вопрос укладывается в 7-17, но развёрнутый план на две
+    // недели по часам в минуту не влезал и возвращался ошибкой обрыва.
+    // Верхняя граница здесь — maxDuration маршрута, а за ним nginx с 320 с.
+    signal: AbortSignal.timeout(180_000),
   });
 
   if (!res.ok) {

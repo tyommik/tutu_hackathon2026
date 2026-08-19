@@ -3,7 +3,9 @@ import { assist, AssistUnavailable } from "@/lib/assist";
 import type { Party, Trip } from "@/lib/trip";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+// Запас над таймаутом запроса к модели (180 с в assist.ts): маршрут не должен
+// обрываться раньше него, иначе вместо ответа модели придёт обрыв маршрута.
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   let body: {
