@@ -82,21 +82,40 @@ export function MapCanvas({
    */
   const [tiled, setTiled] = useState(false);
   const [dark, setDark] = useState(false);
-  const [screenW, setScreenW] = useState(1200);
+  /**
+   * Фактический размер окна карты. Вид обязан держать ЕГО соотношение
+   * сторон: иначе SVG вписывает viewBox с полосами сверху и снизу — на
+   * схеме их не было видно, а тайловая подложка обнажила.
+   */
+  const [screen, setScreen] = useState({ w: 1200, h: 744 });
+  const aspectRef = useRef(screen.h / screen.w);
+  aspectRef.current = screen.h / screen.w;
   useEffect(() => {
     if (TILES) setTiled(localStorage.getItem("tropa.mapTiles") !== "off");
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     setDark(mq.matches);
     const onMq = (e: MediaQueryListEvent) => setDark(e.matches);
     mq.addEventListener("change", onMq);
-    const measure = () => setScreenW(svgRef.current?.clientWidth ?? 1200);
+    const measure = () => {
+      const el = svgRef.current;
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+        setScreen({ w: el.clientWidth, h: el.clientHeight });
+      }
+    };
     measure();
-    window.addEventListener("resize", measure);
+    // ResizeObserver, а не resize окна: ширина карты меняется и от
+    // сворачивания плана (--panel-gap), окно при этом не трогается
+    const ro = new ResizeObserver(measure);
+    if (svgRef.current) ro.observe(svgRef.current);
     return () => {
       mq.removeEventListener("change", onMq);
-      window.removeEventListener("resize", measure);
+      ro.disconnect();
     };
   }, []);
+  // окно изменилось — вид перенимает его пропорцию, верхний край на месте
+  useEffect(() => {
+    setView((v) => ({ ...v, h: v.w * (screen.h / screen.w) }));
+  }, [screen]);
   const tileTemplate = (dark && TILES_DARK) || TILES;
   const showTiles = tiled && !!tileTemplate;
 
@@ -149,7 +168,7 @@ export function MapCanvas({
       const pts = pick.hotels
         .filter((h) => h.lat !== undefined && h.lng !== undefined)
         .map((h) => project(h.lat!, h.lng!));
-      const target = fitRect(pts, VB.H / VB.W);
+      const target = fitRect(pts, aspectRef.current);
       if (!target) return;
       if (savedView.current === null) {
         savedView.current = { ...viewRef.current };
@@ -174,13 +193,15 @@ export function MapCanvas({
       // размер, так что глубокий зум разводит и города, и пины отелей
       const nw = Math.min(WORLD, Math.max(0.1, v.w * k));
       const real = nw / v.w;
+      // высота — всегда из пропорции окна, иначе SVG рисует полосы
+      const nh = nw * aspectRef.current;
       const px = cx ?? v.x + v.w / 2;
       const py = cy ?? v.y + v.h / 2;
       return {
         x: px - (px - v.x) * real,
-        y: py - (py - v.y) * real,
+        y: py - (py - v.y) * (nh / v.h),
         w: nw,
-        h: v.h * real,
+        h: nh,
       };
     });
   }, []);
@@ -223,6 +244,9 @@ export function MapCanvas({
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
+        /* пропорция вида держится равной окну; none страхует от полос в
+           момент, когда окно уже изменилось, а вид ещё догоняет */
+        preserveAspectRatio="none"
         aria-label="Карта маршрута"
         onWheel={(e) => {
           const p = toSvg(e);
@@ -258,7 +282,7 @@ export function MapCanvas({
         style={{ cursor: drag.current ? "grabbing" : "grab" }}
       >
         {showTiles ? (
-          svgTiles(view, screenW).map((t) => (
+          svgTiles(view, screen.w).map((t) => (
             <image
               key={t.key}
               href={tileUrl(tileTemplate!, t)}
@@ -521,7 +545,13 @@ export function MapCanvas({
       <div className="zoomctl">
         <button className="btn" aria-label="Приблизить" onClick={() => zoomAt(1 / 1.35)}>+</button>
         <button className="btn" aria-label="Отдалить" onClick={() => zoomAt(1.35)}>−</button>
-        <button className="btn" aria-label="Весь маршрут" onClick={() => setView({ ...HOME })}>⌂</button>
+        <button
+          className="btn"
+          aria-label="Весь маршрут"
+          onClick={() => setView({ ...HOME, h: HOME.w * aspectRef.current })}
+        >
+          ⌂
+        </button>
         {TILES && (
           <button
             className="btn"
