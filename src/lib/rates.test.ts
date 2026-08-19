@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currencyOptions, parseCbrXml, toRub } from "./rates";
+import { currencyOptions, parseCbrXml, snapshotRates, toRub } from "./rates";
 
 // Фрагмент живого ответа cbr.ru/scripts/XML_daily.asp (18.08.2026)
 const XML = `<?xml version="1.0" encoding="windows-1251"?><ValCurs Date="18.08.2026" name="Foreign Currency Market">
@@ -69,5 +69,34 @@ describe("currencyOptions", () => {
 
   it("без курсов остаётся хотя бы популярный список", () => {
     expect(currencyOptions(null)).toContain("EUR");
+  });
+});
+
+describe("snapshotRates", () => {
+  const r = snapshotRates();
+
+  it("снимок разбирается и даёт осмысленный набор валют", () => {
+    expect(Object.keys(r.rates).length).toBeGreaterThan(30);
+    expect(r.rates.RUB).toBe(1);
+  });
+
+  it("популярные валюты на месте — иначе пересчёт трат молча сломается", () => {
+    for (const c of ["USD", "EUR", "TRY", "AED", "KZT", "CNY"]) {
+      expect(r.rates[c]).toBeGreaterThan(0);
+    }
+  });
+
+  it("номинал учтён: иена стоит рубли, а не сотни рублей", () => {
+    // JPY котируется за 100 единиц; без деления на номинал курс был бы ~×100
+    expect(r.rates.JPY).toBeGreaterThan(0.1);
+    expect(r.rates.JPY).toBeLessThan(5);
+  });
+
+  it("источник помечен как снимок с датой — на экране видно, что курс не живой", () => {
+    expect(r.source).toMatch(/снимок от \d{2}\.\d{2}\.\d{4}/);
+  });
+
+  it("дата снимка заполнена", () => {
+    expect(r.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });

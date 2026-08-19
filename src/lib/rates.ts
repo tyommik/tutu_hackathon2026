@@ -7,6 +7,8 @@
  * добавления вместе с датой, чтобы позже было видно, по чему считали.
  */
 
+import snapshot from "./ratesSnapshot.json";
+
 export interface Rates {
   /** Сколько рублей за одну единицу валюты. RUB всегда 1. */
   rates: Record<string, number>;
@@ -55,6 +57,19 @@ export function parseCbrXml(xml: string): Rates {
     rates[code] = value / nominal;
   }
   return { rates, date, source: "ЦБ РФ" };
+}
+
+/**
+ * Курсы из снимка, снятого при выкладке (scripts/fetch-rates.mjs).
+ *
+ * Разбирает снимок тот же parseCbrXml, что и живой ответ ЦБ: снимок хранит
+ * сырой XML именно ради этого. Второй парсер означал бы, что снимок и живые
+ * курсы однажды разойдутся — а там номиналы, на которых ошибка стоит ста
+ * крат (иена и форинт котируются за 100 единиц).
+ */
+export function snapshotRates(): Rates {
+  const r = parseCbrXml(snapshot.xml);
+  return { ...r, source: `ЦБ РФ, снимок от ${snapshot.date}` };
 }
 
 export interface Converted {
