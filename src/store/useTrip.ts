@@ -31,6 +31,13 @@ import legendData from "@/lib/legend.json";
 
 export type FetchStatus = "idle" | "loading" | "ready" | "empty" | "error";
 
+export interface LegTransferState {
+  loading: boolean;
+  options?: TransferOption[];
+  hubsTried?: string[];
+  error?: string;
+}
+
 /** Три размера окна копилота: кнопка, окно у угла, колонка вровень с планом. */
 export type CopilotSize = "collapsed" | "normal" | "large";
 
@@ -87,15 +94,14 @@ interface TripState {
   legUnavailable: Record<string, Array<{ mode: string; reason?: string; detail?: string }>>;
   /** Как Туту понял города плеча — из meta поиска. */
   legResolved: Record<string, { from?: ResolvedGeo; to?: ResolvedGeo }>;
-  /** Подбор пересадки для плеча без прямых вариантов. */
-  transfer: {
-    open: boolean;
-    loading: boolean;
-    legId?: string;
-    options?: TransferOption[];
-    hubsTried?: string[];
-    error?: string;
-  };
+  /** Модал пересадки: только «что открыто», данные — в legTransfers. */
+  transfer: { open: boolean; legId?: string };
+  /**
+   * Результаты подбора пересадки по плечам. Ключ — id плеча (в нём города
+   * и дата), записи не чистятся: повторное появление того же плеча получает
+   * готовый результат мгновенно.
+   */
+  legTransfers: Record<string, LegTransferState>;
   stayStatus: Record<string, FetchStatus>;
   stayHotels: Record<string, HotelSnapshot[]>;
   checkout: { open: boolean; loading: boolean; result?: CheckoutResult };
@@ -139,7 +145,9 @@ interface TripState {
   splitViaHub: (legId: string, hubName?: string) => void;
   /** Заменить город во всём маршруте: «Бали» → «Денпасар». */
   replaceCity: (oldName: string, newName: string) => void;
-  findTransfer: (legId: string) => Promise<void>;
+  findTransfer: (legId: string) => void;
+  /** Фоновый подбор пересадки для плеча — без открытия модала. */
+  prefetchTransfer: (legId: string) => Promise<void>;
   closeTransfer: () => void;
   applyTransfer: (option: TransferOption) => void;
   repair: () => void;
@@ -221,7 +229,8 @@ export const useTrip = create<TripState>((set, get) => ({
   legResolved: {},
   stayStatus: {},
   stayHotels: {},
-  transfer: { open: false, loading: false },
+  transfer: { open: false },
+  legTransfers: {},
   checkout: { open: false, loading: false },
   optimizer: { open: false, loading: false },
   copilot: { messages: [], loading: false, size: "normal" },
@@ -363,11 +372,19 @@ export const useTrip = create<TripState>((set, get) => ({
     void get().hydrate();
   },
 
-  /** Подбор пересадки: перебор хабов на сервере, результат — в модале. */
-  findTransfer: async (legId) => {
+  /** Открыть модал пересадки; данные придут из legTransfers (или уже там). */
+  findTransfer: (legId) => {
+    set({ transfer: { open: true, legId } });
+    void get().prefetchTransfer(legId);
+  },
+
+  /** Перебор хабов на сервере; после ошибки повторный вызов пробует снова. */
+  prefetchTransfer: async (legId) => {
     const leg = get().legs.find((l) => l.id === legId);
     if (!leg) return;
-    set({ transfer: { open: true, loading: true, legId } });
+    const cur = get().legTransfers[legId];
+    if (cur && (cur.loading || cur.options)) return;
+    set((s) => ({ legTransfers: { ...s.legTransfers, [legId]: { loading: true } } }));
     try {
       const r = await post<{ options: TransferOption[]; hubsTried: string[] }>("/api/transfer", {
         origin: leg.from.name,
@@ -375,18 +392,19 @@ export const useTrip = create<TripState>((set, get) => ({
         date: leg.date,
         party: get().party,
       });
-      set({
-        transfer: { open: true, loading: false, legId, options: r.options, hubsTried: r.hubsTried },
-      });
-    } catch (e) {
-      set({
-        transfer: {
-          open: true,
-          loading: false,
-          legId,
-          error: e instanceof Error ? e.message : String(e),
+      set((s) => ({
+        legTransfers: {
+          ...s.legTransfers,
+          [legId]: { loading: false, options: r.options, hubsTried: r.hubsTried },
         },
-      });
+      }));
+    } catch (e) {
+      set((s) => ({
+        legTransfers: {
+          ...s.legTransfers,
+          [legId]: { loading: false, error: e instanceof Error ? e.message : String(e) },
+        },
+      }));
     }
   },
 
@@ -428,7 +446,7 @@ export const useTrip = create<TripState>((set, get) => ({
     set((s) => ({
       legs: newLegs,
       stays: deriveStays(newLegs, s.stays),
-      transfer: { open: false, loading: false },
+      transfer: { open: false },
     }));
     void get().hydrate();
   },
@@ -546,6 +564,9 @@ export const useTrip = create<TripState>((set, get) => ({
               legStatus: { ...s.legStatus, [leg.id]: offers.length ? "ready" : "empty" },
             };
           });
+          // умная система не ждёт клика: прямых нет — сами ищем пересадку,
+          // карточка плеча покажет готовые варианты
+          if (offers.length === 0) void get().prefetchTransfer(leg.id);
           get().repair();
           void get().hydrate();
         })

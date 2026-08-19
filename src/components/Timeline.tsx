@@ -7,10 +7,10 @@ import { explainEmptyLeg } from "@/lib/emptyReasons";
 import { ExtraRow } from "./ExtraRow";
 import { resolvedLabel, suggestDestination, type ResolvedGeo } from "@/lib/geoAliases";
 import { renderLightMarkdown } from "@/lib/lightMarkdown";
-import { inCity } from "@/lib/morph";
+import { accusative, inCity } from "@/lib/morph";
 import { formatMinutes, stayKey, type Leg, type Note, type Stay } from "@/lib/trip";
 import { timeWindows, type TimeWindowNote } from "@/lib/windows";
-import { ORIGIN_NOTE, useTrip } from "@/store/useTrip";
+import { ORIGIN_NOTE, useTrip, type LegTransferState } from "@/store/useTrip";
 
 const MODE_ICON: Record<string, string> = {
   avia: "✈",
@@ -72,9 +72,9 @@ export function Timeline({
   onOpenSeatmap: (leg: Leg) => void;
 }) {
   const {
-    legs, stays, origin, legStatus, legUnavailable, legResolved, stayStatus, warnings, copilot,
-    addCity, removeLastCity, clearOrigin, seedLegend, clear, splitViaHub, setNote, askCopilot,
-    findTransfer, replaceCity, extras, planOpen, setPlanOpen,
+    legs, stays, origin, legStatus, legUnavailable, legResolved, legTransfers, stayStatus,
+    warnings, copilot, addCity, removeLastCity, clearOrigin, seedLegend, clear, splitViaHub,
+    setNote, askCopilot, findTransfer, replaceCity, extras, planOpen, setPlanOpen,
   } = useTrip();
   const busyNote = (key: string) => copilot.loading && copilot.noteFor === key;
   const lastLegId = legs.length > 0 ? legs[legs.length - 1].id : null;
@@ -167,6 +167,7 @@ export function Timeline({
                       askCopilot(transferPrompt(w, it.leg.date), { noteFor: it.leg.id })
                     }
                     resolved={legResolved[it.leg.id]}
+                    transfer={legTransfers[it.leg.id]}
                     onFindTransfer={() => findTransfer(it.leg.id)}
                     onSuggestCity={(from, to) => replaceCity(from, to)}
                   />
@@ -612,6 +613,7 @@ function LegCard({
   onNote,
   onAskSights,
   resolved,
+  transfer,
   onFindTransfer,
   onSuggestCity,
 }: {
@@ -632,6 +634,8 @@ function LegCard({
   onAskSights: (w: TimeWindowNote) => void;
   /** Как Туту понял города плеча — показываем при пустой выдаче. */
   resolved?: { from?: ResolvedGeo; to?: ResolvedGeo };
+  /** Фоновый автоподбор пересадки для пустого плеча. */
+  transfer?: LegTransferState;
   onFindTransfer: () => void;
   onSuggestCity: (oldName: string, newName: string) => void;
 }) {
@@ -720,7 +724,15 @@ function LegCard({
                 onFindTransfer();
               }}
             >
-              Искать с пересадкой →
+              {transfer?.loading
+                ? "Подбираем пересадку…"
+                : transfer?.options?.length
+                  ? `С пересадкой через ${accusative(transfer.options[0].hub)} от ${fmt(
+                      transfer.options[0].totalPrice,
+                    )} — показать →`
+                  : transfer?.options
+                    ? "С пересадкой тоже не нашлось · подробнее"
+                    : "Искать с пересадкой →"}
             </button>
             {suggestion && (
               <button

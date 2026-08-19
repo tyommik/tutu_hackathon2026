@@ -27,10 +27,12 @@ export function TransferModal() {
   const legs = useTrip((s) => s.legs);
   const closeTransfer = useTrip((s) => s.closeTransfer);
   const applyTransfer = useTrip((s) => s.applyTransfer);
+  // данные подбора живут в legTransfers: их мог заранее собрать автопоиск
+  const lt = useTrip((s) => (s.transfer.legId ? s.legTransfers[s.transfer.legId] : undefined));
   if (!transfer.open) return null;
 
   const leg = legs.find((l) => l.id === transfer.legId);
-  const options = transfer.options ?? [];
+  const options = lt?.options ?? [];
 
   return (
     <div className="ovl" onClick={(e) => e.target === e.currentTarget && closeTransfer()}>
@@ -45,18 +47,18 @@ export function TransferModal() {
           <button className="btn" onClick={closeTransfer} aria-label="Закрыть">✕</button>
         </div>
 
-        {transfer.loading && (
+        {lt?.loading && (
           <div className="loading">
-            Проверяем хабы: {(transfer.hubsTried ?? ["Москва", "Стамбул", "Дубай"]).join(", ")}…
+            Проверяем хабы: {(lt?.hubsTried ?? ["Москва", "Стамбул", "Дубай"]).join(", ")}…
             <div className="hint">Это два поиска на каждый хаб — до полминуты.</div>
           </div>
         )}
 
-        {transfer.error && <p className="sub err">{transfer.error}</p>}
+        {lt?.error && <p className="sub err">{lt.error}</p>}
 
-        {!transfer.loading && !transfer.error && options.length === 0 && (
+        {!lt?.loading && !lt?.error && options.length === 0 && (
           <p className="sub">
-            Через хабы {(transfer.hubsTried ?? []).join(", ")} собрать маршрут не удалось.
+            Через хабы {(lt?.hubsTried ?? []).join(", ")} собрать маршрут не удалось.
             Возможно, дело в названии города — проверьте, как его понял Туту, или сдвиньте дату.
           </p>
         )}
