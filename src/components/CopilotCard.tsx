@@ -229,7 +229,7 @@ export function CopilotCard() {
     <div className={`cop${large ? " large" : ""}`}>
       <div className="head">
         <span className="spark">✦</span>
-        Копилот
+        Тревис — твой копилот
         <span className="tag">советы ИИ</span>
         <button
           className="min"
