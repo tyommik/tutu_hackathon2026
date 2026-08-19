@@ -24,6 +24,8 @@ export function CopilotCard() {
   const [voice, setVoice] = useState<"idle" | "rec" | "busy">("idle");
   const [voiceErr, setVoiceErr] = useState("");
   const recRef = useRef<MediaRecorder | null>(null);
+  // ✕ во время записи: остановить и выбросить звук, не ходя в распознавание
+  const cancelRef = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveCtxRef = useRef<AudioContext | null>(null);
   const waveRafRef = useRef(0);
@@ -127,12 +129,15 @@ export function CopilotCard() {
     waveCtxRef.current = null;
   };
 
-  const toggleVoice = async () => {
-    if (voice === "busy") return;
-    if (voice === "rec") {
-      recRef.current?.stop();
-      return;
-    }
+  const finishVoice = () => recRef.current?.stop();
+
+  const cancelVoice = () => {
+    cancelRef.current = true;
+    recRef.current?.stop();
+  };
+
+  const startVoice = async () => {
+    if (voice !== "idle") return;
     setVoiceErr("");
     let stream: MediaStream;
     try {
@@ -154,6 +159,12 @@ export function CopilotCard() {
     rec.onstop = async () => {
       stopWave();
       stream.getTracks().forEach((t) => t.stop());
+      if (cancelRef.current) {
+        cancelRef.current = false;
+        setVoice("idle");
+        recRef.current = null;
+        return;
+      }
       setVoice("busy");
       try {
         const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
@@ -284,15 +295,36 @@ export function CopilotCard() {
             readOnly={voice === "rec"}
           />
           {voice === "rec" && <canvas ref={canvasRef} className="wave" />}
-          <button
-            className={`micbtn${voice === "rec" ? " rec" : ""}`}
-            onClick={toggleVoice}
-            disabled={copilot.loading || voice === "busy"}
-            aria-label={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
-            title={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
-          >
-            {voice === "busy" ? "…" : voice === "rec" ? "✕" : <span className="mic-ico" />}
-          </button>
+          {voice === "rec" ? (
+            <>
+              <button
+                className="micbtn cancel"
+                onClick={cancelVoice}
+                aria-label="Отменить запись"
+                title="Отменить запись"
+              >
+                ✕
+              </button>
+              <button
+                className="micbtn done"
+                onClick={finishVoice}
+                aria-label="Завершить запись и распознать"
+                title="Завершить запись и распознать"
+              >
+                ✓
+              </button>
+            </>
+          ) : (
+            <button
+              className="micbtn"
+              onClick={startVoice}
+              disabled={copilot.loading || voice === "busy"}
+              aria-label="Надиктовать голосом"
+              title="Надиктовать голосом"
+            >
+              {voice === "busy" ? "…" : <span className="mic-ico" />}
+            </button>
+          )}
         </div>
         <button className="btn" onClick={send} disabled={copilot.loading || !text.trim()}>
           →
@@ -418,7 +450,7 @@ export function CopilotCard() {
           position: absolute;
           top: 1px;
           left: 1px;
-          width: calc(100% - 31px);
+          width: calc(100% - 65px);
           height: calc(100% - 2px);
           display: block;
           border-radius: 7px;
@@ -439,8 +471,14 @@ export function CopilotCard() {
           font-size: 14px;
         }
         .micbtn:hover { color: var(--accent); background: var(--panel-2); }
-        .micbtn.rec {
+        .micbtn.cancel {
+          right: 36px;
           color: var(--warn);
+        }
+        .micbtn.cancel:hover { color: var(--warn); }
+        .micbtn.done {
+          color: var(--accent);
+          font-weight: 600;
           animation: micpulse 1.2s ease-in-out infinite;
         }
         .mic-ico {
