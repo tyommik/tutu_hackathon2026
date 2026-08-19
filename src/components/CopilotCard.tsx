@@ -19,6 +19,16 @@ export function CopilotCard() {
   const phraseRef = useRef(FIRST_PHRASE);
   const size = copilot.size;
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // высота поля подстраивается под текст; max-height ограничивает рост в CSS
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // scrollHeight не включает рамку, а box-sizing: border-box — включает
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }, [text, size]);
 
   // вопрос мог прийти из карточки плана — прокручиваем к нему сами
   useEffect(() => {
@@ -126,11 +136,18 @@ export function CopilotCard() {
       </div>
 
       <div className="row">
-        <input
+        <textarea
+          ref={inputRef}
           value={text}
-          placeholder="Куда едем?"
+          rows={1}
+          placeholder="Куда едем? Shift+Enter — новая строка"
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
           disabled={copilot.loading}
         />
         <button className="btn" onClick={send} disabled={copilot.loading || !text.trim()}>
@@ -238,8 +255,17 @@ export function CopilotCard() {
           to { transform: rotate(-360deg); }
         }
         .msg.err { background: var(--warn-bg); color: var(--warn); }
-        .row { display: flex; gap: 8px; }
-        .row input { flex: 1; min-width: 0; font-size: 15px; padding: 9px 12px; }
+        .row { display: flex; gap: 8px; align-items: flex-end; }
+        .row textarea {
+          flex: 1;
+          min-width: 0;
+          font-size: 15px;
+          line-height: 1.4;
+          padding: 9px 12px;
+          resize: none;
+          max-height: 140px;
+          overflow-y: auto;
+        }
         .row .btn { padding: 9px 16px; font-size: 15px; }
       `}</style>
     </div>

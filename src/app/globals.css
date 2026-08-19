@@ -94,6 +94,7 @@ button {
 }
 
 input,
+textarea,
 select {
   font: inherit;
   color: var(--ink);
