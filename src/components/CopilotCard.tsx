@@ -20,6 +20,10 @@ export function CopilotCard() {
   const size = copilot.size;
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // idle → rec (идёт запись) → busy (ждём Whisper) → idle
+  const [voice, setVoice] = useState<"idle" | "rec" | "busy">("idle");
+  const [voiceErr, setVoiceErr] = useState("");
+  const recRef = useRef<MediaRecorder | null>(null);
 
   // высота поля подстраивается под текст; max-height ограничивает рост в CSS
   useEffect(() => {
@@ -49,6 +53,69 @@ export function CopilotCard() {
     }, 2000);
     return () => clearInterval(t);
   }, [copilot.loading]);
+
+  // Живую запись глушим при уходе со страницы, чтобы не оставить микрофон включённым.
+  useEffect(() => {
+    return () => {
+      const rec = recRef.current;
+      if (rec && rec.state !== "inactive") {
+        rec.onstop = null;
+        rec.stop();
+        rec.stream.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  const toggleVoice = async () => {
+    if (voice === "busy") return;
+    if (voice === "rec") {
+      recRef.current?.stop();
+      return;
+    }
+    setVoiceErr("");
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setVoiceErr("Нет доступа к микрофону — разрешите его в браузере или введите текст руками.");
+      return;
+    }
+    const rec = new MediaRecorder(
+      stream,
+      MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? { mimeType: "audio/webm;codecs=opus" }
+        : undefined,
+    );
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      setVoice("busy");
+      try {
+        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+        const form = new FormData();
+        form.append("audio", blob, "voice.webm");
+        const res = await fetch("/api/transcribe", { method: "POST", body: form });
+        const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+        if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+        if (data.text) {
+          setText((t) => (t ? `${t} ${data.text}` : data.text!));
+        } else {
+          setVoiceErr("Речь не распозналась — попробуйте ещё раз.");
+        }
+      } catch (e) {
+        setVoiceErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setVoice("idle");
+        recRef.current = null;
+      }
+    };
+    recRef.current = rec;
+    rec.start();
+    setVoice("rec");
+  };
 
   const send = () => {
     const t = text.trim();
@@ -135,12 +202,13 @@ export function CopilotCard() {
         {copilot.unavailable && <div className="msg err">{copilot.unavailable}</div>}
       </div>
 
+      {voiceErr && <div className="voice-err">{voiceErr}</div>}
       <div className="row">
         <textarea
           ref={inputRef}
           value={text}
           rows={1}
-          placeholder="Куда едем? Shift+Enter — новая строка"
+          placeholder={voice === "rec" ? "Говорите..." : "Куда едем? Shift+Enter — новая строка"}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -150,6 +218,15 @@ export function CopilotCard() {
           }}
           disabled={copilot.loading}
         />
+        <button
+          className={`btn mic${voice === "rec" ? " rec" : ""}`}
+          onClick={toggleVoice}
+          disabled={copilot.loading || voice === "busy"}
+          aria-label={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
+          title={voice === "rec" ? "Остановить запись" : "Надиктовать голосом"}
+        >
+          {voice === "busy" ? "…" : voice === "rec" ? "■" : "🎙"}
+        </button>
         <button className="btn" onClick={send} disabled={copilot.loading || !text.trim()}>
           →
         </button>
@@ -255,6 +332,7 @@ export function CopilotCard() {
           to { transform: rotate(-360deg); }
         }
         .msg.err { background: var(--warn-bg); color: var(--warn); }
+        .voice-err { font-size: 13px; color: var(--warn); }
         .row { display: flex; gap: 8px; align-items: flex-end; }
         .row textarea {
           flex: 1;
@@ -267,6 +345,14 @@ export function CopilotCard() {
           overflow-y: auto;
         }
         .row .btn { padding: 9px 16px; font-size: 15px; }
+        .row .mic { padding: 9px 12px; }
+        .row .mic.rec {
+          color: var(--warn);
+          animation: micpulse 1.2s ease-in-out infinite;
+        }
+        @keyframes micpulse {
+          50% { opacity: 0.45; }
+        }
       `}</style>
     </div>
   );
