@@ -3,11 +3,25 @@
 import { useEffect, useRef, useState } from "react";
 import { renderLightMarkdown } from "@/lib/lightMarkdown";
 import { drawPhrase, FIRST_PHRASE } from "@/lib/thinking";
+import { groupMessages } from "@/lib/activityLog";
+import { pluralRu } from "@/lib/progress";
 import { useTrip } from "@/store/useTrip";
 
 export function CopilotCard() {
   const { copilot, askCopilot, stopCopilot, setCopilotSize } = useTrip();
+  // идут ли сейчас реальные шаги — от этого живёт последняя группа статусов
+  const agentBusy = useTrip(
+    (s) =>
+      Object.values(s.legStatus).some((v) => v === "loading") ||
+      Object.values(s.stayStatus).some((v) => v === "loading") ||
+      Object.values(s.legTransfers).some((t) => t.loading),
+  );
   const [text, setText] = useState("");
+  /**
+   * Развёрнутость групп статусов по индексу первого статуса в ленте: явный
+   * клик пользователя важнее умолчания «живая группа развёрнута».
+   */
+  const [openSteps, setOpenSteps] = useState<Record<number, boolean>>({});
   const [phrase, setPhrase] = useState(FIRST_PHRASE);
   /**
    * Мешок фраз и текущая фраза — в ref, а не в state: их читает и меняет
@@ -251,20 +265,55 @@ export function CopilotCard() {
             Или спросите про план: бюджет, стыковки, что посмотреть в городах.
           </div>
         )}
-        {copilot.messages.map((m, i) =>
-          m.role === "assistant" ? (
-            <div
-              key={i}
-              className="msg assistant md"
-              // рендер санитайзит HTML и схемы ссылок (см. lib/lightMarkdown)
-              dangerouslySetInnerHTML={{ __html: renderLightMarkdown(m.content) }}
-            />
-          ) : (
-            <div key={i} className="msg user">
-              {m.content}
-            </div>
-          ),
-        )}
+        {(() => {
+          const blocks = groupMessages(copilot.messages);
+          return blocks.map((b, bi) => {
+            if (b.kind === "message") {
+              const m = b.message;
+              return m.role === "assistant" ? (
+                <div
+                  key={b.index}
+                  className="msg assistant md"
+                  // рендер санитайзит HTML и схемы ссылок (см. lib/lightMarkdown)
+                  dangerouslySetInnerHTML={{ __html: renderLightMarkdown(m.content) }}
+                />
+              ) : (
+                <div key={b.index} className="msg user">
+                  {m.content}
+                </div>
+              );
+            }
+            // группа статусов: живая (агент ещё работает) развёрнута сама,
+            // завершённая сворачивается в строку-экспандер
+            const live = bi === blocks.length - 1 && agentBusy;
+            const open = openSteps[b.index] ?? live;
+            return (
+              <div key={`s-${b.index}`} className="steps">
+                <button
+                  className="steps-head"
+                  aria-expanded={open}
+                  onClick={() => setOpenSteps((o) => ({ ...o, [b.index]: !open }))}
+                >
+                  <span className={`chev${open ? " o" : ""}`} aria-hidden>
+                    ▸
+                  </span>
+                  {live
+                    ? "Работаю…"
+                    : `Как я искал · ${b.items.length} ${pluralRu(b.items.length, ["шаг", "шага", "шагов"])}`}
+                </button>
+                {open && (
+                  <div className="steps-body" role="status">
+                    {b.items.map((t, ti) => (
+                      <div key={ti} className="step">
+                        {t}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          });
+        })()}
         {copilot.loading && (
           <div className="thinking" role="status">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -445,6 +494,38 @@ export function CopilotCard() {
           to { transform: rotate(-360deg); }
         }
         .msg.err { background: var(--warn-bg); color: var(--warn); }
+        /* Группа реальных шагов агента: строка-экспандер + журнал под ней. */
+        .steps { align-self: stretch; }
+        .steps-head {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 2px 4px;
+          background: none;
+          border: none;
+          font-size: 12px;
+          color: var(--ink-3);
+          cursor: pointer;
+        }
+        .steps-head:hover { color: var(--ink-2); }
+        .chev {
+          font-size: 10px;
+          transition: transform 0.15s ease;
+        }
+        .chev.o { transform: rotate(90deg); }
+        .steps-body {
+          margin: 3px 0 2px 9px;
+          padding: 4px 0 4px 12px;
+          border-left: 2px solid var(--line);
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .step {
+          font-size: 12px;
+          line-height: 1.45;
+          color: var(--ink-2);
+        }
         .voice-err { font-size: 13px; color: var(--warn); }
         .row { display: flex; gap: 8px; align-items: flex-end; }
         .field { position: relative; flex: 1; min-width: 0; display: flex; }

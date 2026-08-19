@@ -20,6 +20,20 @@ import {
   type Stay,
 } from "@/lib/trip";
 import { firstFeasible, planRepairs } from "@/lib/repair";
+import {
+  draftStatus,
+  legEmptyStatus,
+  legErrorStatus,
+  legFoundStatus,
+  legSearchingStatus,
+  stayEmptyStatus,
+  stayFoundStatus,
+  staySearchingStatus,
+  transferEmptyStatus,
+  transferFoundStatus,
+  transferSearchingStatus,
+  type ChatMessage,
+} from "@/lib/activityLog";
 import { extrasTotal, makeExtra, type Extra } from "@/lib/extras";
 import type { ResolvedGeo } from "@/lib/geoAliases";
 import { toRub, type Rates } from "@/lib/rates";
@@ -107,7 +121,8 @@ interface TripState {
   checkout: { open: boolean; loading: boolean; result?: CheckoutResult };
   optimizer: { open: boolean; loading: boolean; result?: OptimizeResponse };
   copilot: {
-    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    /** Лента чата: реплики и статусы реальных шагов агента (role: "status"). */
+    messages: ChatMessage[];
     loading: boolean;
     unavailable?: string;
     /**
@@ -160,6 +175,8 @@ interface TripState {
   runOptimizer: () => Promise<void>;
   closeOptimizer: () => void;
   applySuggestion: (s: OptimizeSuggestion) => void;
+  /** Записать реальный шаг агента в ленту чата (см. lib/activityLog). */
+  logStatus: (text: string) => void;
   askCopilot: (message: string, opts?: { noteFor?: string }) => Promise<void>;
   /** Оборвать текущую генерацию; возвращает снятую с отправки фразу. */
   stopCopilot: () => string | undefined;
@@ -268,6 +285,14 @@ export const useTrip = create<TripState>((set, get) => ({
       stayHotels: {},
     });
   },
+
+  logStatus: (text) =>
+    set((s) => ({
+      copilot: {
+        ...s.copilot,
+        messages: [...s.copilot.messages, { role: "status", content: text }],
+      },
+    })),
 
   /**
    * Удаление последнего города маршрута: убирает последнее плечо целиком.
@@ -385,6 +410,7 @@ export const useTrip = create<TripState>((set, get) => ({
     const cur = get().legTransfers[legId];
     if (cur && (cur.loading || cur.options)) return;
     set((s) => ({ legTransfers: { ...s.legTransfers, [legId]: { loading: true } } }));
+    get().logStatus(transferSearchingStatus(leg.from.name, leg.to.name));
     try {
       const r = await post<{ options: TransferOption[]; hubsTried: string[] }>("/api/transfer", {
         origin: leg.from.name,
@@ -398,6 +424,12 @@ export const useTrip = create<TripState>((set, get) => ({
           [legId]: { loading: false, options: r.options, hubsTried: r.hubsTried },
         },
       }));
+      const best = r.options[0];
+      get().logStatus(
+        best
+          ? transferFoundStatus(leg.from.name, leg.to.name, best.hub, best.totalPrice)
+          : transferEmptyStatus(leg.from.name, leg.to.name),
+      );
     } catch (e) {
       set((s) => ({
         legTransfers: {
@@ -405,6 +437,7 @@ export const useTrip = create<TripState>((set, get) => ({
           [legId]: { loading: false, error: e instanceof Error ? e.message : String(e) },
         },
       }));
+      get().logStatus(transferEmptyStatus(leg.from.name, leg.to.name));
     }
   },
 
@@ -525,6 +558,7 @@ export const useTrip = create<TripState>((set, get) => ({
     for (const leg of state.legs) {
       if (leg.selectedOffer || (state.legStatus[leg.id] ?? "idle") !== "idle") continue;
       set((s) => ({ legStatus: { ...s.legStatus, [leg.id]: "loading" } }));
+      get().logStatus(legSearchingStatus(leg.from.name, leg.to.name));
       void post<{
         offers: OfferSnapshot[];
         unavailable?: Array<{ mode: string; reason?: string; detail?: string }>;
@@ -564,21 +598,33 @@ export const useTrip = create<TripState>((set, get) => ({
               legStatus: { ...s.legStatus, [leg.id]: offers.length ? "ready" : "empty" },
             };
           });
+          get().logStatus(
+            offers.length
+              ? legFoundStatus(
+                  leg.from.name,
+                  leg.to.name,
+                  Math.min(...offers.map((o) => o.price)),
+                  offers.length,
+                )
+              : legEmptyStatus(leg.from.name, leg.to.name),
+          );
           // умная система не ждёт клика: прямых нет — сами ищем пересадку,
           // карточка плеча покажет готовые варианты
           if (offers.length === 0) void get().prefetchTransfer(leg.id);
           get().repair();
           void get().hydrate();
         })
-        .catch(() =>
-          set((s) => ({ legStatus: { ...s.legStatus, [leg.id]: "error" } })),
-        );
+        .catch(() => {
+          set((s) => ({ legStatus: { ...s.legStatus, [leg.id]: "error" } }));
+          get().logStatus(legErrorStatus(leg.from.name, leg.to.name));
+        });
     }
 
     for (const stay of get().stays) {
       const key = stayKey(stay);
       if (stay.selectedHotel || (get().stayStatus[key] ?? "idle") !== "idle") continue;
       set((s) => ({ stayStatus: { ...s.stayStatus, [key]: "loading" } }));
+      get().logStatus(staySearchingStatus(stay.city.name));
       void post<{ hotels: HotelSnapshot[] }>("/api/search", {
         kind: "stay",
         city: stay.city.name,
@@ -595,10 +641,22 @@ export const useTrip = create<TripState>((set, get) => ({
             stayHotels: { ...s.stayHotels, [key]: hotels },
             stayStatus: { ...s.stayStatus, [key]: hotels.length ? "ready" : "empty" },
           }));
+          // отель без цены в выдаче бывает — «от 0 ₽» в статусе выглядел бы багом
+          const prices = hotels.map((h) => h.price).filter((p) => p > 0);
+          get().logStatus(
+            hotels.length
+              ? stayFoundStatus(
+                  stay.city.name,
+                  prices.length ? Math.min(...prices) : undefined,
+                  hotels.length,
+                )
+              : stayEmptyStatus(stay.city.name),
+          );
         })
-        .catch(() =>
-          set((s) => ({ stayStatus: { ...s.stayStatus, [key]: "error" } })),
-        );
+        .catch(() => {
+          set((s) => ({ stayStatus: { ...s.stayStatus, [key]: "error" } }));
+          get().logStatus(stayEmptyStatus(stay.city.name));
+        });
     }
   },
 
@@ -812,7 +870,13 @@ export const useTrip = create<TripState>((set, get) => ({
         };
       }>(
         "/api/assist",
-        { message, trip: { legs: curLegs, stays }, history, party },
+        {
+          message,
+          trip: { legs: curLegs, stays },
+          // статусы — служебная лента для человека, модели они не контекст
+          history: history.filter((m) => m.role !== "status"),
+          party,
+        },
         copilotAbort.signal,
       );
       set((s) => ({
@@ -848,6 +912,7 @@ export const useTrip = create<TripState>((set, get) => ({
           stayStatus: {},
           stayHotels: {},
         });
+        get().logStatus(draftStatus(legs.length));
         void get().hydrate();
       }
     } catch (e) {
@@ -868,13 +933,19 @@ export const useTrip = create<TripState>((set, get) => ({
     const cop = get().copilot;
     if (!cop.loading) return undefined;
     copilotAbort?.abort();
-    // снимаем оптимистично добавленную фразу — она вернётся в поле черновиком
+    // Снимаем оптимистично добавленную фразу — она вернётся в поле черновиком.
+    // После неё могли успеть вклиниться статусы поисков — ищем с конца именно
+    // реплику пользователя, но не заходим за уже пришедший ответ ассистента.
     const messages = [...cop.messages];
-    const last = messages[messages.length - 1];
     let draft: string | undefined;
-    if (last?.role === "user") {
-      draft = last.content;
-      messages.pop();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant") break;
+      if (m.role === "user") {
+        draft = m.content;
+        messages.splice(i, 1);
+        break;
+      }
     }
     set((s) => ({
       copilot: { ...s.copilot, messages, loading: false, noteFor: undefined },

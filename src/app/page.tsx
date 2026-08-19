@@ -14,6 +14,7 @@ import { TransferModal } from "@/components/TransferModal";
 import { StartScreen } from "@/components/StartScreen";
 import type { HotelSnapshot, Stay } from "@/lib/trip";
 import type { Leg } from "@/lib/trip";
+import { pluralRu, searchProgress } from "@/lib/progress";
 import { useTrip } from "@/store/useTrip";
 
 function fmt(n: number) {
@@ -21,16 +22,38 @@ function fmt(n: number) {
 }
 
 export default function Home() {
-  const { legs, stays, origin, started, planOpen, legStatus, stayStatus, runCheckout, runOptimizer, goHome } =
-    useTrip();
+  const {
+    legs,
+    stays,
+    origin,
+    started,
+    planOpen,
+    legStatus,
+    legTransfers,
+    copilot,
+    stayStatus,
+    runCheckout,
+    runOptimizer,
+    goHome,
+  } = useTrip();
   const [hoveredLeg, setHoveredLeg] = useState<string | null>(null);
   const [hoveredStay, setHoveredStay] = useState<string | null>(null);
   const [variants, setVariants] = useState<VariantsTarget | null>(null);
   const [seatmapLeg, setSeatmapLeg] = useState<Leg | null>(null);
   const [roomsFor, setRoomsFor] = useState<{ hotel: HotelSnapshot; stay: Stay } | null>(null);
   const budget = useTrip((s) => s.total());
-  const searchingLegs = legs.filter((l) => !l.selectedOffer && legStatus[l.id] === "loading").length;
+  const progress = searchProgress(
+    legs.map((l) => ({ loading: !l.selectedOffer && legStatus[l.id] === "loading" })),
+  );
+  const searchingLegs = progress?.searching ?? 0;
   const searchingStays = Object.values(stayStatus).filter((st) => st === "loading").length;
+  // поле статуса агента: последний реальный шаг из журнала + счётчик плеч
+  const working =
+    searchingLegs > 0 ||
+    searchingStays > 0 ||
+    copilot.loading ||
+    Object.values(legTransfers).some((t) => t.loading);
+  const lastStatus = [...copilot.messages].reverse().find((m) => m.role === "status")?.content;
   const incomplete =
     searchingLegs > 0 ||
     searchingStays > 0 ||
@@ -53,16 +76,19 @@ export default function Home() {
         ) : origin ? (
           <div className="meta">старт: {origin.city.name}</div>
         ) : null}
-        <div className="budget">
-          <div className="lbl">
-            {searchingLegs > 0 ? (
-              <span className="searching-lbl">
-                ищем {searchingLegs} из {legs.length} плеч
+        {working && (
+          <div className="agent-status" role="status">
+            <span className="dot" aria-hidden />
+            <span className="txt">{lastStatus ?? "Агент работает…"}</span>
+            {progress && (
+              <span className="cnt">
+                ещё {progress.searching} {pluralRu(progress.searching, ["плечо", "плеча", "плеч"])}
               </span>
-            ) : (
-              "Бюджет поездки"
             )}
           </div>
+        )}
+        <div className="budget">
+          <div className="lbl">Бюджет поездки</div>
           <div className="val">
             {incomplete && legs.length > 0 ? "~" : ""}
             {fmt(budget)}
@@ -130,6 +156,8 @@ export default function Home() {
           background: var(--panel);
           border-bottom: 1px solid var(--line);
           z-index: 40;
+          /* якорь для абсолютно центрированного поля статуса агента */
+          position: relative;
         }
         .home {
           display: block;
@@ -167,6 +195,65 @@ export default function Home() {
           font-size: 13px;
           border-left: 1px solid var(--line);
           padding-left: 14px;
+          /*
+           * В узкой шапке подпись складывалась в столбик по слову — особенно
+           * когда справа появляется строка прогресса. Лучше одна строка с
+           * многоточием: min-width: 0 разрешает флексу ужимать её ниже
+           * ширины содержимого.
+           */
+          min-width: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        /*
+         * Поле статуса агента: последний реальный шаг из журнала (см.
+         * lib/activityLog) в явной рамке. Центр шапки, абсолютно: позиция не
+         * зависит от ширины соседей, а min-width не даёт полю прыгать при
+         * смене коротких и длинных статусов. Когда агент простаивает, поля
+         * нет — шапка живёт обычной жизнью.
+         */
+        .agent-status {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          min-width: 300px;
+          max-width: min(40vw, 560px);
+          padding: 6px 12px;
+          border: 1px solid var(--line-strong);
+          border-radius: 10px;
+          background: var(--panel-2);
+          font-size: 17px;
+          color: var(--ink-2);
+        }
+        .agent-status .dot {
+          flex: none;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--accent);
+          animation: statuspulse 1.1s ease-in-out infinite;
+        }
+        .agent-status .txt {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .agent-status .cnt {
+          flex: none;
+          padding-left: 8px;
+          border-left: 1px solid var(--line);
+          color: var(--ink-3);
+          white-space: nowrap;
+        }
+        @keyframes statuspulse {
+          50% { opacity: 0.35; }
         }
         .budget {
           margin-left: auto;
@@ -177,13 +264,6 @@ export default function Home() {
           letter-spacing: 0.12em;
           text-transform: uppercase;
           color: var(--ink-3);
-        }
-        .searching-lbl {
-          color: var(--accent);
-          animation: lblpulse 1.1s ease-in-out infinite;
-        }
-        @keyframes lblpulse {
-          50% { opacity: 0.45; }
         }
         .val {
           font-size: 20px;
