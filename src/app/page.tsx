@@ -35,8 +35,10 @@ export default function Home() {
     runCheckout,
     runOptimizer,
     goHome,
+    resetAll,
   } = useTrip();
   const [hoveredLeg, setHoveredLeg] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [hoveredStay, setHoveredStay] = useState<string | null>(null);
   const [variants, setVariants] = useState<VariantsTarget | null>(null);
   const [seatmapLeg, setSeatmapLeg] = useState<Leg | null>(null);
@@ -65,7 +67,13 @@ export default function Home() {
   return (
     <div className="app">
       <header className="topbar">
-        <button className="home" onClick={goHome} title="На главную" aria-label="На главную">
+        <button
+          className="home"
+          // пустой план сбрасывать не о чем — уходим на главную без вопросов
+          onClick={() => (legs.length === 0 && !origin ? goHome() : setConfirmReset(true))}
+          title="На главную"
+          aria-label="На главную"
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="brand" src="/tutu-ai-wordmark.webp" alt="tutu AI" width={440} height={163} />
         </button>
@@ -143,6 +151,34 @@ export default function Home() {
       <CheckoutModal />
       <OptimizerModal />
       {seatmapLeg && <SeatmapModal leg={seatmapLeg} onClose={() => setSeatmapLeg(null)} />}
+
+      {confirmReset && (
+        <div
+          className="reset-ovl"
+          onClick={(e) => e.target === e.currentTarget && setConfirmReset(false)}
+        >
+          <div className="reset-modal" role="alertdialog" aria-label="Начать заново?">
+            <h3>Начать заново?</h3>
+            <p>Маршрут, отели и чат с копилотом будут сброшены.</p>
+            <div className="reset-actions">
+              <button className="btn" onClick={() => setConfirmReset(false)}>
+                Отмена
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  setConfirmReset(false);
+                  resetAll();
+                  // план живёт в #p=...: не почистить — F5 воскресит его
+                  window.history.replaceState(null, "", window.location.pathname);
+                }}
+              >
+                Сбросить всё
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .app {
@@ -280,6 +316,42 @@ export default function Home() {
         /* план свёрнут — карта забирает место колонки, оставляя корешок */
         .stage.wide {
           --panel-gap: calc(var(--strip-w) + 28px);
+        }
+        .reset-ovl {
+          position: fixed;
+          inset: 0;
+          background: rgba(10, 16, 26, 0.45);
+          z-index: 70;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+        }
+        .reset-modal {
+          background: var(--panel);
+          border-radius: 16px;
+          width: min(420px, 100%);
+          box-shadow: var(--shadow);
+          padding: 20px 22px;
+        }
+        .reset-modal h3 {
+          font-size: 17px;
+          margin-bottom: 6px;
+        }
+        .reset-modal p {
+          font-size: 14px;
+          color: var(--ink-2);
+        }
+        .reset-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+          margin-top: 16px;
+        }
+        .reset-actions :global(.btn.danger) {
+          background: var(--danger);
+          border-color: var(--danger);
+          color: #fff;
         }
       `}</style>
     </div>

@@ -227,6 +227,8 @@ interface TripState {
   start: (query?: string) => void;
   /** Возврат на стартовый экран по клику на логотип. */
   goHome: () => void;
+  /** Полный сброс по клику на лого: план, чат, кэши — и стартовый экран. */
+  resetAll: () => void;
   loadRates: () => Promise<void>;
   addExtra: (input: { label: string; amount: number; currency: string; afterId: string }) => void;
   updateExtra: (id: string, input: { label: string; amount: number; currency: string }) => void;
@@ -1186,6 +1188,21 @@ export const useTrip = create<TripState>((set, get) => ({
    * «или собрать маршрут вручную» — она заходит в то же состояние.
    */
   goHome: () => set({ started: false }),
+
+  resetAll: () => {
+    get().stopCopilot(); // живая генерация не должна ожить в пустом плане
+    get().clear();
+    set({
+      legResolved: {},
+      legTransfers: {},
+      hotelPick: null,
+      transfer: { open: false },
+      checkout: { open: false, loading: false },
+      optimizer: { open: false, loading: false },
+      copilot: { messages: [], loading: false, size: "normal", reviewsLeft: 0 },
+      started: false,
+    });
+  },
 
   /** Курсы тянем один раз на сессию: ЦБ обновляет их раз в сутки. */
   loadRates: async () => {
