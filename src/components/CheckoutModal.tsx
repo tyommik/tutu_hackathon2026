@@ -11,6 +11,50 @@ export function CheckoutModal() {
   if (!checkout.open) return null;
   const r = checkout.result;
 
+  // пока идёт живая пере-проверка — только затемнение и крутилка: окно
+  // выезжает уже с готовым результатом, а не пустым
+  if (checkout.loading) {
+    return (
+      <div className="ovl">
+        <div className="wait" role="status">
+          <span className="spin" aria-hidden />
+          Пере-проверяем маршрут живьём…
+        </div>
+        <style jsx>{`
+          .ovl {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 16, 26, 0.45);
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .wait {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            color: #fff;
+            font-size: 14px;
+            text-shadow: 0 1px 8px rgba(10, 16, 26, 0.6);
+          }
+          .spin {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            animation: spin 0.8s linear infinite;
+          }
+          @keyframes spin {
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
   return (
     <div className="ovl" onClick={(e) => e.target === e.currentTarget && closeCheckout()}>
       <div className="modal">
@@ -18,8 +62,6 @@ export function CheckoutModal() {
         <p className="sub">
           Каждое плечо и отель пере-проверены живыми запросами к Туту — цены свежие, план не устарел.
         </p>
-
-        {checkout.loading && <div className="loading">Пере-проверяем маршрут живьём…</div>}
 
         {r && (
           <>
@@ -91,7 +133,6 @@ export function CheckoutModal() {
         }
         h3 { font-size: 17px; font-weight: 600; }
         .sub { color: var(--ink-2); font-size: 13px; margin-top: 4px; }
-        .loading { padding: 24px 0; color: var(--ink-2); }
         .rows { margin-top: 12px; }
         .row {
           display: flex;
