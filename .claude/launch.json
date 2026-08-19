@@ -28,6 +28,16 @@
       "port": 3200
     },
     {
+      "name": "tropa-dev-auto",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
       "name": "tropa-dev-3100",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
