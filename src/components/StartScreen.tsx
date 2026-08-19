@@ -4,11 +4,33 @@ import { useState } from "react";
 import { useTrip } from "@/store/useTrip";
 
 /**
- * Первый экран: одна строка и ничего лишнего.
+ * Первый экран: строка запроса и карточки-образцы.
  * Планирование поездки начинается не с формы «откуда-куда-когда», а с фразы
- * в голове — её и просим. Дальше открывается рабочее пространство, а
- * запрос уходит копилоту, который собирает черновик маршрута.
+ * в голове — её и просим. Образцы показывают, каким бывает запрос, быстрее
+ * любой инструкции: клик отправляет фразу тем же путём, что и своя строка.
  */
+const EXAMPLES = [
+  {
+    emoji: "🇵🇹",
+    title: "Португалия и Испания",
+    hint: "Порту, Лиссабон, Мадрид, Барселона — в сентябре, вдвоём",
+    query:
+      "Из Воронежа в Португалию и Испанию в сентябре, вдвоём на две недели: Порту, Лиссабон, Мадрид, Барселона",
+  },
+  {
+    emoji: "⛪",
+    title: "Золотое кольцо",
+    hint: "классический тур по древним городам",
+    query: "Тур по Золотому кольцу",
+  },
+  {
+    emoji: "🌉",
+    title: "В Бостон",
+    hint: "из Подольска, 26 сентября, втроём",
+    query: "Из Подольска в Бостон на 26 сентября втроём",
+  },
+];
+
 export function StartScreen() {
   const start = useTrip((s) => s.start);
   const [text, setText] = useState("");
@@ -34,6 +56,18 @@ export function StartScreen() {
         <button className="btn primary" onClick={go}>
           Поехали!
         </button>
+      </div>
+
+      <div className="samples">
+        {EXAMPLES.map((ex) => (
+          <button key={ex.title} className="sample" title={ex.query} onClick={() => start(ex.query)}>
+            <span className="emoji" aria-hidden>
+              {ex.emoji}
+            </span>
+            <span className="ttl">{ex.title}</span>
+            <span className="hint">{ex.hint}</span>
+          </button>
+        ))}
       </div>
 
       <button className="manual" onClick={() => start()}>
@@ -115,6 +149,53 @@ export function StartScreen() {
         /* узкий экран: пара уже не помещается со сдвигом — центрируем как есть */
         @media (max-width: 900px) {
           .box { margin-left: 0; }
+        }
+        .samples {
+          display: flex;
+          gap: 12px;
+          margin-top: 4px;
+        }
+        .sample {
+          width: 172px;
+          /* квадрат по просьбе из макета; низ — текст, эмодзи уходит вверх */
+          aspect-ratio: 1;
+          border-radius: 14px;
+          background: var(--panel);
+          border: 1px solid var(--line);
+          box-shadow: var(--shadow);
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          justify-content: flex-end;
+          gap: 5px;
+          padding: 14px;
+          text-align: left;
+          cursor: pointer;
+          transition: transform 0.12s ease, border-color 0.12s ease;
+        }
+        .sample:hover {
+          transform: translateY(-2px);
+          border-color: var(--accent);
+        }
+        .sample .emoji {
+          font-size: 30px;
+          margin-bottom: auto;
+        }
+        .sample .ttl {
+          font-size: 14px;
+          font-weight: 600;
+          line-height: 1.25;
+        }
+        .sample .hint {
+          font-size: 11.5px;
+          color: var(--ink-2);
+          line-height: 1.35;
+        }
+        /* узкий экран: квадраты в столбик не нужны — пусть станут строками */
+        @media (max-width: 640px) {
+          .samples { flex-direction: column; width: min(680px, 100%); }
+          .sample { width: 100%; aspect-ratio: auto; }
+          .sample .emoji { margin-bottom: 0; }
         }
         .manual {
           font-size: 13px;
