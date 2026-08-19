@@ -45,6 +45,14 @@ export function StartScreen() {
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
+    // Пустое поле меряем нельзя: на первом рендере styled-jsx ещё не
+    // применил width, textarea узкая, и scrollHeight считает плейсхолдер,
+    // завёрнутый в столбик, — inline-высота в сотни пикселей прилипала.
+    // Без текста высотой правят rows=1 и CSS.
+    if (!text) {
+      el.style.height = "";
+      return;
+    }
     el.style.height = "auto";
     // scrollHeight не включает рамку, а box-sizing: border-box — включает
     el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
@@ -307,7 +315,11 @@ export function StartScreen() {
         /* узкий экран: квадраты в столбик не нужны — пусть станут строками */
         @media (max-width: 640px) {
           .samples { flex-direction: column; }
-          .sample { aspect-ratio: auto; }
+          .sample {
+            aspect-ratio: auto;
+            /* в колонке flex-базис 0 сжал бы карточки в полоски */
+            flex: 0 0 auto;
+          }
           .sample .emoji { margin-bottom: 0; }
         }
         .manual {
